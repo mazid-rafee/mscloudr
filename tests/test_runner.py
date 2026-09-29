@@ -252,7 +252,7 @@ def test_checkpoint_roundtrip_restores_sampler_and_loader_generator_states(tmp_p
     )
 
     assert payload["epoch"] == 1
-    assert float(model.scale) != 99.0
+    assert float(model.scale.detach().item()) != 99.0
     assert torch.equal(
         expected_sampler,
         actual_sampler,
