@@ -14,6 +14,14 @@ from .dbcr import (
     PUBLISHED_PARAMETER_COUNT,
     SinusoidalTimeEmbedding,
 )
+from .patent_blocks import (
+    PatentFeatureMapLayerNorm,
+    PatentSimplifiedChannelAttention,
+    PatentTimeEmbeddedNAFBlock,
+    PatentTimeEmbedding,
+    PatentTimeEmbeddingConfig,
+    sine_bridge_alpha,
+)
 
 __all__ = [
     "AuditedDBCRNet",
@@ -22,8 +30,14 @@ __all__ = [
     "LayerNorm2d",
     "NAFBlock",
     "PUBLISHED_PARAMETER_COUNT",
+    "PatentFeatureMapLayerNorm",
+    "PatentSimplifiedChannelAttention",
+    "PatentTimeEmbeddedNAFBlock",
+    "PatentTimeEmbedding",
+    "PatentTimeEmbeddingConfig",
     "SFBlock",
     "SimpleGate",
     "SinusoidalTimeEmbedding",
     "count_trainable_parameters",
+    "sine_bridge_alpha",
 ]
