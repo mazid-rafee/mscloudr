@@ -93,3 +93,35 @@ and model identity must remain unchanged.
 There is intentionally no split seed for this protocol. Membership is fixed by
 the reference ROI lists. run_config.json records split_seed as null rather than
 pretending a random split was used.
+
+
+## Real-data smoke run
+
+Before launching a full 50-epoch experiment, use smoke mode to exercise the
+actual TIFF loader, verified split, GPU model, optimizer, validation path, and
+checkpoint writer on only a few batches:
+
+    CUDA_VISIBLE_DEVICES=0 python -m mscloudr.cli.train \
+      --run-name DBCR_Original_smoke_seed42 \
+      --schedule original \
+      --device cuda \
+      --epochs 1 \
+      --batch-size 4 \
+      --num-workers 4 \
+      --train-seed 42 \
+      --sampler-seed 42 \
+      --smoke-run
+
+By default smoke mode uses 2 training batches and 2 validation batches. These
+limits can be changed with --smoke-train-batches and --smoke-val-batches.
+
+Smoke mode requires exactly one epoch and does not support resume. Its
+run_config.json and checkpoint metadata explicitly record:
+
+    run_kind = "smoke"
+    paper_grade = false
+    max_train_batches = 2
+    max_val_batches = 2
+
+A smoke checkpoint is only a plumbing artifact. It must not be used in a paper
+table or as initialization for the controlled full-run comparison.

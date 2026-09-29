@@ -25,6 +25,9 @@ def _args(tmp_path, **overrides):
         "sampler_seed": 42,
         "device": "cpu",
         "deterministic_algorithms": False,
+        "smoke_run": False,
+        "smoke_train_batches": 2,
+        "smoke_val_batches": 2,
         "resume": None,
     }
     values.update(overrides)
@@ -310,6 +313,8 @@ def test_run_wires_verified_protocol_into_fit(tmp_path, monkeypatch):
     assert captured["model_identity"] == "legacy_dbcr"
     assert captured["total_steps"] == 1000
     assert captured["resume_from"] is None
+    assert captured["max_train_batches"] is None
+    assert captured["max_val_batches"] is None
 
     config = (
         Path(tmp_path)
@@ -317,3 +322,72 @@ def test_run_wires_verified_protocol_into_fit(tmp_path, monkeypatch):
         / "run_config.json"
     )
     assert config.is_file()
+
+
+
+def test_smoke_run_requires_one_epoch_and_rejects_resume(tmp_path):
+    wrong_epochs = _args(
+        tmp_path,
+        smoke_run=True,
+        epochs=2,
+    )
+    try:
+        train_cli.validate_cli_args(
+            wrong_epochs
+        )
+    except ValueError as error:
+        assert "requires --epochs 1" in str(
+            error
+        )
+    else:
+        raise AssertionError(
+            "expected multi-epoch smoke run to fail"
+        )
+
+    resume_smoke = _args(
+        tmp_path,
+        smoke_run=True,
+        epochs=1,
+        resume="checkpoint.pt",
+    )
+    try:
+        train_cli.validate_cli_args(
+            resume_smoke
+        )
+    except ValueError as error:
+        assert "does not support --resume" in str(
+            error
+        )
+    else:
+        raise AssertionError(
+            "expected smoke resume to fail"
+        )
+
+
+def test_smoke_metadata_is_explicitly_non_paper_grade(tmp_path):
+    args = _args(
+        tmp_path,
+        smoke_run=True,
+        epochs=1,
+        smoke_train_batches=3,
+        smoke_val_batches=4,
+    )
+    metadata = train_cli._run_metadata(
+        args=args,
+        dataset_root=Path("/data"),
+        split_audit={
+            "protocol": "test",
+            "splits": {},
+        },
+        trainable_parameters=(
+            train_cli.LEGACY_DBCR_PARAMETER_COUNT
+        ),
+        schedule_name="original",
+        mean_reversion_rate=None,
+        device=torch.device("cpu"),
+    )
+
+    assert metadata["run_kind"] == "smoke"
+    assert metadata["paper_grade"] is False
+    assert metadata["max_train_batches"] == 3
+    assert metadata["max_val_batches"] == 4

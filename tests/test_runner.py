@@ -450,3 +450,66 @@ def test_resume_matches_uninterrupted_two_epoch_training(tmp_path):
         item["epoch"]
         for item in history_file
     ] == [1, 2]
+
+
+
+class CountingTinyModel(TinyModel):
+    def __init__(self):
+        super().__init__()
+        self.forward_calls = 0
+
+    def forward(self, x_t, t, sar):
+        self.forward_calls += 1
+        return super().forward(
+            x_t,
+            t,
+            sar,
+        )
+
+
+def test_training_epoch_respects_max_batches():
+    model = CountingTinyModel()
+    loader = _loader(
+        60,
+        shuffle=True,
+        n=6,
+    )
+    optimizer = make_adam_optimizer(
+        model,
+        lr=1e-2,
+    )
+
+    run_training_epoch(
+        model,
+        loader,
+        optimizer,
+        schedule=sine_alpha,
+        total_steps=1000,
+        sampler_generator=make_torch_generator(61),
+        device=torch.device("cpu"),
+        max_batches=1,
+    )
+
+    assert model.forward_calls == 1
+
+
+def test_validation_epoch_respects_max_batches():
+    model = CountingTinyModel()
+    loader = _loader(
+        62,
+        shuffle=False,
+        n=6,
+    )
+
+    run_validation_epoch(
+        model,
+        loader,
+        schedule=sine_alpha,
+        total_steps=1000,
+        sampler_generator=make_torch_generator(63),
+        device=torch.device("cpu"),
+        max_batches=1,
+    )
+
+    # One random-t forward plus one endpoint forward.
+    assert model.forward_calls == 2

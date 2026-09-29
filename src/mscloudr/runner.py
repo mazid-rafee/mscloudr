@@ -106,13 +106,19 @@ def run_training_epoch(
     total_steps: int,
     sampler_generator: torch.Generator,
     device: torch.device,
+    max_batches: int | None = None,
 ) -> float:
     """Train for one epoch and return sample-weighted mean L1."""
+
+    if max_batches is not None and int(max_batches) <= 0:
+        raise ValueError("max_batches must be positive when provided")
 
     model.train()
     meter = WeightedMean()
 
-    for batch in loader:
+    for batch_index, batch in enumerate(loader):
+        if max_batches is not None and batch_index >= int(max_batches):
+            break
         batch = _move_batch(
             batch,
             device=device,
@@ -148,14 +154,20 @@ def run_validation_epoch(
     total_steps: int,
     sampler_generator: torch.Generator,
     device: torch.device,
+    max_batches: int | None = None,
 ) -> dict[str, float]:
     """Run diagnostic random-t and canonical endpoint validation."""
+
+    if max_batches is not None and int(max_batches) <= 0:
+        raise ValueError("max_batches must be positive when provided")
 
     model.eval()
     random_meter = WeightedMean()
     endpoint_meter = WeightedMean()
 
-    for batch in loader:
+    for batch_index, batch in enumerate(loader):
+        if max_batches is not None and batch_index >= int(max_batches):
+            break
         batch = _move_batch(
             batch,
             device=device,
@@ -240,6 +252,8 @@ def _checkpoint_metadata(
     schedule_name: str,
     model_identity: str,
     run_metadata: Mapping[str, Any] | None,
+    max_train_batches: int | None,
+    max_val_batches: int | None,
 ) -> dict[str, Any]:
     metadata = dict(
         run_metadata or {}
@@ -257,6 +271,12 @@ def _checkpoint_metadata(
             ],
             "checkpoint_selection_metric": CHECKPOINT_SELECTION_METRIC,
             "diagnostic_random_t_metric": DIAGNOSTIC_RANDOM_T_METRIC,
+            "max_train_batches": (
+                None if max_train_batches is None else int(max_train_batches)
+            ),
+            "max_val_batches": (
+                None if max_val_batches is None else int(max_val_batches)
+            ),
         }
     )
     return metadata
@@ -280,6 +300,8 @@ def fit(
     run_metadata: Mapping[str, Any] | None = None,
     resume_from: str | os.PathLike[str] | None = None,
     epoch_callback: Callable[[EpochMetrics], None] | None = None,
+    max_train_batches: int | None = None,
+    max_val_batches: int | None = None,
 ) -> list[EpochMetrics]:
     """Run epoch-boundary training with endpoint-selected checkpoints."""
 
@@ -362,6 +384,8 @@ def fit(
         schedule_name=schedule_name,
         model_identity=model_identity,
         run_metadata=run_metadata,
+        max_train_batches=max_train_batches,
+        max_val_batches=max_val_batches,
     )
 
     for epoch in range(
@@ -376,6 +400,7 @@ def fit(
             total_steps=total_steps,
             sampler_generator=sampler_generator,
             device=device,
+            max_batches=max_train_batches,
         )
 
         validation = run_validation_epoch(
@@ -385,6 +410,7 @@ def fit(
             total_steps=total_steps,
             sampler_generator=sampler_generator,
             device=device,
+            max_batches=max_val_batches,
         )
 
         metrics = EpochMetrics(

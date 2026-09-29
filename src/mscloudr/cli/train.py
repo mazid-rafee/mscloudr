@@ -57,6 +57,8 @@ DEFAULT_BATCH_SIZE = 4
 DEFAULT_NUM_WORKERS = 4
 DEFAULT_TRAIN_SEED = 42
 DEFAULT_SAMPLER_SEED = 42
+DEFAULT_SMOKE_TRAIN_BATCHES = 2
+DEFAULT_SMOKE_VAL_BATCHES = 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -156,6 +158,26 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--smoke-run",
+        action="store_true",
+        help=(
+            "Run exactly one truncated train/validation epoch for end-to-end "
+            "plumbing verification. Smoke outputs are marked non-paper-grade."
+        ),
+    )
+    parser.add_argument(
+        "--smoke-train-batches",
+        type=int,
+        default=DEFAULT_SMOKE_TRAIN_BATCHES,
+        help="Number of training batches used when --smoke-run is enabled.",
+    )
+    parser.add_argument(
+        "--smoke-val-batches",
+        type=int,
+        default=DEFAULT_SMOKE_VAL_BATCHES,
+        help="Number of validation batches used when --smoke-run is enabled.",
+    )
+    parser.add_argument(
         "--resume",
         default=None,
         help=(
@@ -253,6 +275,23 @@ def validate_cli_args(
         raise ValueError(
             "sampler-seed must be non-negative"
         )
+    if args.smoke_train_batches <= 0:
+        raise ValueError(
+            "smoke-train-batches must be positive"
+        )
+    if args.smoke_val_batches <= 0:
+        raise ValueError(
+            "smoke-val-batches must be positive"
+        )
+    if args.smoke_run:
+        if args.epochs != 1:
+            raise ValueError(
+                "smoke-run requires --epochs 1"
+            )
+        if args.resume is not None:
+            raise ValueError(
+                "smoke-run does not support --resume"
+            )
 
 
 def _write_json_atomic(
@@ -377,6 +416,22 @@ def _run_metadata(
             args.ignore_file
         ),
         "device": str(device),
+        "run_kind": (
+            "smoke" if args.smoke_run else "full"
+        ),
+        "paper_grade": (
+            not args.smoke_run
+        ),
+        "max_train_batches": (
+            args.smoke_train_batches
+            if args.smoke_run
+            else None
+        ),
+        "max_val_batches": (
+            args.smoke_val_batches
+            if args.smoke_run
+            else None
+        ),
         "reproducibility": seed_metadata,
     }
 
@@ -628,6 +683,11 @@ def run(
                 "checkpoint_selection_metric": (
                     CHECKPOINT_SELECTION_METRIC
                 ),
+                "run_kind": (
+                    "smoke"
+                    if args.smoke_run
+                    else "full"
+                ),
             },
             indent=2,
             sort_keys=True,
@@ -660,6 +720,16 @@ def run(
         run_metadata=metadata,
         resume_from=args.resume,
         epoch_callback=_epoch_progress,
+        max_train_batches=(
+            args.smoke_train_batches
+            if args.smoke_run
+            else None
+        ),
+        max_val_batches=(
+            args.smoke_val_batches
+            if args.smoke_run
+            else None
+        ),
     )
 
     return history
