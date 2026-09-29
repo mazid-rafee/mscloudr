@@ -1,0 +1,4 @@
+# Dataset-relative cloudy sample IDs known to be unreadable/corrupt in the
+# historical ms-cloudR installation. Keep machine-specific absolute paths out
+# of version control.
+ROIs1868_summer_s2_cloudy/s2_cloudy_146/ROIs1868_summer_s2_cloudy_146_p202.tif
