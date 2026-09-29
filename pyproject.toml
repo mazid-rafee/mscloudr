@@ -22,7 +22,7 @@ dev = [
 ]
 
 [project.scripts]
-mscloudr-audit-dataset = "mscloudr.cli.audit_dataset:main"
+mscloudr-audit-dataset = "mscloudr.cli.audit_dataset:main"\nmscloudr-audit-split = "mscloudr.cli.audit_split:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
