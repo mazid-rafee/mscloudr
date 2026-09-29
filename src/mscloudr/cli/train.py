@@ -42,6 +42,7 @@ from mscloudr.reproducibility import (
 )
 from mscloudr.runner import (
     HISTORICAL_LEARNING_RATE,
+    BatchProgress,
     EpochMetrics,
     fit,
 )
@@ -59,6 +60,7 @@ DEFAULT_TRAIN_SEED = 42
 DEFAULT_SAMPLER_SEED = 42
 DEFAULT_SMOKE_TRAIN_BATCHES = 2
 DEFAULT_SMOKE_VAL_BATCHES = 2
+DEFAULT_PROGRESS_EVERY = 500
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -178,6 +180,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of validation batches used when --smoke-run is enabled.",
     )
     parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=DEFAULT_PROGRESS_EVERY,
+        help=(
+            "Print within-epoch progress every N processed batches. "
+            "Use 0 to disable batch progress logging."
+        ),
+    )
+    parser.add_argument(
         "--resume",
         default=None,
         help=(
@@ -282,6 +293,10 @@ def validate_cli_args(
     if args.smoke_val_batches <= 0:
         raise ValueError(
             "smoke-val-batches must be positive"
+        )
+    if args.progress_every < 0:
+        raise ValueError(
+            "progress-every must be non-negative"
         )
     if args.smoke_run:
         if args.epochs != 1:
@@ -432,6 +447,9 @@ def _run_metadata(
             if args.smoke_run
             else None
         ),
+        "progress_every": (
+            args.progress_every
+        ),
         "reproducibility": seed_metadata,
     }
 
@@ -530,6 +548,50 @@ def _epoch_progress(
             ),
         ),
         flush=True,
+    )
+
+
+def _batch_progress(
+    progress: BatchProgress,
+) -> None:
+    """Print compact, grep-friendly within-epoch progress."""
+
+    if progress.phase == "train":
+        print(
+            "epoch={epoch} phase=train batch={batch}/{total} "
+            "train_l1_running={l1:.6f}".format(
+                epoch=progress.epoch,
+                batch=progress.batch,
+                total=progress.total_batches,
+                l1=progress.metrics[
+                    "train_l1_running"
+                ],
+            ),
+            flush=True,
+        )
+        return
+
+    if progress.phase == "val":
+        print(
+            "epoch={epoch} phase=val batch={batch}/{total} "
+            "val_random_t_l1_running={random:.6f} "
+            "val_endpoint_l1_running={endpoint:.6f}".format(
+                epoch=progress.epoch,
+                batch=progress.batch,
+                total=progress.total_batches,
+                random=progress.metrics[
+                    "val_random_t_l1_running"
+                ],
+                endpoint=progress.metrics[
+                    "val_endpoint_l1_running"
+                ],
+            ),
+            flush=True,
+        )
+        return
+
+    raise ValueError(
+        f"unknown progress phase: {progress.phase!r}"
     )
 
 
@@ -688,6 +750,9 @@ def run(
                     if args.smoke_run
                     else "full"
                 ),
+                "progress_every": (
+                    args.progress_every
+                ),
             },
             indent=2,
             sort_keys=True,
@@ -720,6 +785,16 @@ def run(
         run_metadata=metadata,
         resume_from=args.resume,
         epoch_callback=_epoch_progress,
+        batch_progress_callback=(
+            _batch_progress
+            if args.progress_every > 0
+            else None
+        ),
+        progress_every=(
+            args.progress_every
+            if args.progress_every > 0
+            else None
+        ),
         max_train_batches=(
             args.smoke_train_batches
             if args.smoke_run

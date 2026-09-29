@@ -513,3 +513,87 @@ def test_validation_epoch_respects_max_batches():
 
     # One random-t forward plus one endpoint forward.
     assert model.forward_calls == 2
+
+
+
+def test_training_progress_reports_interval_and_final_batch():
+    model = CountingTinyModel()
+    loader = _loader(
+        70,
+        shuffle=False,
+        n=10,
+    )
+    optimizer = make_adam_optimizer(
+        model,
+        lr=1e-2,
+    )
+    events = []
+
+    run_training_epoch(
+        model,
+        loader,
+        optimizer,
+        schedule=sine_alpha,
+        total_steps=1000,
+        sampler_generator=make_torch_generator(71),
+        device=torch.device("cpu"),
+        epoch=4,
+        progress_every=2,
+        progress_callback=events.append,
+    )
+
+    assert [
+        event.batch
+        for event in events
+    ] == [2, 4, 5]
+    assert all(
+        event.epoch == 4
+        and event.phase == "train"
+        and event.total_batches == 5
+        for event in events
+    )
+    assert all(
+        "train_l1_running" in event.metrics
+        for event in events
+    )
+
+
+def test_validation_progress_reports_interval_and_final_batch():
+    model = CountingTinyModel()
+    loader = _loader(
+        72,
+        shuffle=False,
+        n=10,
+    )
+    events = []
+
+    run_validation_epoch(
+        model,
+        loader,
+        schedule=sine_alpha,
+        total_steps=1000,
+        sampler_generator=make_torch_generator(73),
+        device=torch.device("cpu"),
+        epoch=2,
+        progress_every=3,
+        progress_callback=events.append,
+    )
+
+    assert [
+        event.batch
+        for event in events
+    ] == [3, 5]
+    assert all(
+        event.epoch == 2
+        and event.phase == "val"
+        and event.total_batches == 5
+        for event in events
+    )
+    assert all(
+        {
+            "val_random_t_l1_running",
+            "val_endpoint_l1_running",
+        }
+        <= set(event.metrics)
+        for event in events
+    )

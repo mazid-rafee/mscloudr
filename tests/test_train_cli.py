@@ -28,6 +28,7 @@ def _args(tmp_path, **overrides):
         "smoke_run": False,
         "smoke_train_batches": 2,
         "smoke_val_batches": 2,
+        "progress_every": 500,
         "resume": None,
     }
     values.update(overrides)
@@ -391,3 +392,70 @@ def test_smoke_metadata_is_explicitly_non_paper_grade(tmp_path):
     assert metadata["paper_grade"] is False
     assert metadata["max_train_batches"] == 3
     assert metadata["max_val_batches"] == 4
+
+
+
+def test_progress_every_zero_is_allowed_and_negative_is_rejected(tmp_path):
+    disabled = _args(
+        tmp_path,
+        progress_every=0,
+    )
+    train_cli.validate_cli_args(
+        disabled
+    )
+
+    invalid = _args(
+        tmp_path,
+        progress_every=-1,
+    )
+    try:
+        train_cli.validate_cli_args(
+            invalid
+        )
+    except ValueError as error:
+        assert "progress-every" in str(
+            error
+        )
+    else:
+        raise AssertionError(
+            "expected negative progress interval to fail"
+        )
+
+
+def test_batch_progress_lines_are_grep_friendly(capsys):
+    train_cli._batch_progress(
+        train_cli.BatchProgress(
+            epoch=3,
+            phase="train",
+            batch=500,
+            total_batches=26786,
+            metrics={
+                "train_l1_running": 0.0123456,
+            },
+        )
+    )
+    train_cli._batch_progress(
+        train_cli.BatchProgress(
+            epoch=3,
+            phase="val",
+            batch=500,
+            total_batches=1794,
+            metrics={
+                "val_random_t_l1_running": 0.02,
+                "val_endpoint_l1_running": 0.03,
+            },
+        )
+    )
+
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert lines == [
+        (
+            "epoch=3 phase=train batch=500/26786 "
+            "train_l1_running=0.012346"
+        ),
+        (
+            "epoch=3 phase=val batch=500/1794 "
+            "val_random_t_l1_running=0.020000 "
+            "val_endpoint_l1_running=0.030000"
+        ),
+    ]

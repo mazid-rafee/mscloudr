@@ -125,3 +125,47 @@ run_config.json and checkpoint metadata explicitly record:
 
 A smoke checkpoint is only a plumbing artifact. It must not be used in a paper
 table or as initialization for the controlled full-run comparison.
+
+
+## Within-epoch progress logging
+
+Full runs print lightweight progress every 500 processed batches by default.
+The final batch of each train/validation phase is always printed as well.
+
+Examples:
+
+    epoch=3 phase=train batch=500/26786 train_l1_running=0.021314
+    epoch=3 phase=val batch=500/1794 val_random_t_l1_running=0.018402 val_endpoint_l1_running=0.024116
+    epoch=3 train_l1=0.020901 val_random_t_l1=0.017980 val_endpoint_l1=0.023802
+
+Change the interval with:
+
+    --progress-every 250
+
+or disable within-epoch progress while retaining epoch summaries with:
+
+    --progress-every 0
+
+For the two parallel controlled runs, one terminal can monitor both logs:
+
+    watch -n 2 '
+    for x in \
+      "GPU2 Original |outputs/DBCR_Original_official_seed42.log" \
+      "GPU3 MR_r3    |outputs/DBCR_MR_r3_official_seed42.log"
+    do
+      name="${x%%|*}"
+      file="${x#*|}"
+      printf "%-14s " "$name"
+      if [ -f "$file" ]; then
+        tail -c 16384 "$file" \
+          | tr "\r" "\n" \
+          | grep -E "^epoch=" \
+          | tail -1
+      else
+        echo "log not found"
+      fi
+    done
+    '
+
+The progress values are running means for operational monitoring only. Final
+epoch metrics in history.json remain the recorded experimental quantities.

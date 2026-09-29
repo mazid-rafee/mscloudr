@@ -40,6 +40,17 @@ HISTORICAL_LEARNING_RATE = 5e-5
 
 
 @dataclass(frozen=True)
+class BatchProgress:
+    """One lightweight within-epoch progress event."""
+
+    epoch: int
+    phase: str
+    batch: int
+    total_batches: int
+    metrics: dict[str, float]
+
+
+@dataclass(frozen=True)
 class EpochMetrics:
     epoch: int
     train_l1: float
@@ -97,6 +108,39 @@ def _move_batch(
     return moved
 
 
+def _effective_total_batches(
+    loader: DataLoader,
+    max_batches: int | None,
+) -> int:
+    total = len(loader)
+    if max_batches is not None:
+        total = min(
+            total,
+            int(max_batches),
+        )
+    return int(total)
+
+
+def _should_report_progress(
+    batch_number: int,
+    total_batches: int,
+    progress_every: int | None,
+) -> bool:
+    if progress_every is None:
+        return False
+    progress_every = int(
+        progress_every
+    )
+    if progress_every <= 0:
+        raise ValueError(
+            "progress_every must be positive when provided"
+        )
+    return (
+        batch_number == total_batches
+        or batch_number % progress_every == 0
+    )
+
+
 def run_training_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -107,6 +151,9 @@ def run_training_epoch(
     sampler_generator: torch.Generator,
     device: torch.device,
     max_batches: int | None = None,
+    epoch: int = 1,
+    progress_every: int | None = None,
+    progress_callback: Callable[[BatchProgress], None] | None = None,
 ) -> float:
     """Train for one epoch and return sample-weighted mean L1."""
 
@@ -115,6 +162,10 @@ def run_training_epoch(
 
     model.train()
     meter = WeightedMean()
+    total_batches = _effective_total_batches(
+        loader,
+        max_batches,
+    )
 
     for batch_index, batch in enumerate(loader):
         if max_batches is not None and batch_index >= int(max_batches):
@@ -143,6 +194,27 @@ def run_training_epoch(
             n=result.batch_size,
         )
 
+        batch_number = batch_index + 1
+        if (
+            progress_callback is not None
+            and _should_report_progress(
+                batch_number,
+                total_batches,
+                progress_every,
+            )
+        ):
+            progress_callback(
+                BatchProgress(
+                    epoch=int(epoch),
+                    phase="train",
+                    batch=batch_number,
+                    total_batches=total_batches,
+                    metrics={
+                        "train_l1_running": meter.mean,
+                    },
+                )
+            )
+
     return meter.mean
 
 
@@ -155,6 +227,9 @@ def run_validation_epoch(
     sampler_generator: torch.Generator,
     device: torch.device,
     max_batches: int | None = None,
+    epoch: int = 1,
+    progress_every: int | None = None,
+    progress_callback: Callable[[BatchProgress], None] | None = None,
 ) -> dict[str, float]:
     """Run diagnostic random-t and canonical endpoint validation."""
 
@@ -164,6 +239,10 @@ def run_validation_epoch(
     model.eval()
     random_meter = WeightedMean()
     endpoint_meter = WeightedMean()
+    total_batches = _effective_total_batches(
+        loader,
+        max_batches,
+    )
 
     for batch_index, batch in enumerate(loader):
         if max_batches is not None and batch_index >= int(max_batches):
@@ -194,6 +273,28 @@ def run_validation_epoch(
             endpoint_result.loss,
             n=endpoint_result.batch_size,
         )
+
+        batch_number = batch_index + 1
+        if (
+            progress_callback is not None
+            and _should_report_progress(
+                batch_number,
+                total_batches,
+                progress_every,
+            )
+        ):
+            progress_callback(
+                BatchProgress(
+                    epoch=int(epoch),
+                    phase="val",
+                    batch=batch_number,
+                    total_batches=total_batches,
+                    metrics={
+                        "val_random_t_l1_running": random_meter.mean,
+                        "val_endpoint_l1_running": endpoint_meter.mean,
+                    },
+                )
+            )
 
     return {
         DIAGNOSTIC_RANDOM_T_METRIC: random_meter.mean,
@@ -300,6 +401,8 @@ def fit(
     run_metadata: Mapping[str, Any] | None = None,
     resume_from: str | os.PathLike[str] | None = None,
     epoch_callback: Callable[[EpochMetrics], None] | None = None,
+    batch_progress_callback: Callable[[BatchProgress], None] | None = None,
+    progress_every: int | None = None,
     max_train_batches: int | None = None,
     max_val_batches: int | None = None,
 ) -> list[EpochMetrics]:
@@ -401,6 +504,9 @@ def fit(
             sampler_generator=sampler_generator,
             device=device,
             max_batches=max_train_batches,
+            epoch=epoch,
+            progress_every=progress_every,
+            progress_callback=batch_progress_callback,
         )
 
         validation = run_validation_epoch(
@@ -411,6 +517,9 @@ def fit(
             sampler_generator=sampler_generator,
             device=device,
             max_batches=max_val_batches,
+            epoch=epoch,
+            progress_every=progress_every,
+            progress_callback=batch_progress_callback,
         )
 
         metrics = EpochMetrics(
