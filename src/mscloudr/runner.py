@@ -14,7 +14,7 @@ import json
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import torch
 import torch.nn as nn
@@ -279,6 +279,7 @@ def fit(
     optimizer: Optimizer | None = None,
     run_metadata: Mapping[str, Any] | None = None,
     resume_from: str | os.PathLike[str] | None = None,
+    epoch_callback: Callable[[EpochMetrics], None] | None = None,
 ) -> list[EpochMetrics]:
     """Run epoch-boundary training with endpoint-selected checkpoints."""
 
@@ -442,5 +443,8 @@ def fit(
             history_path,
             history,
         )
+
+        if epoch_callback is not None:
+            epoch_callback(metrics)
 
     return history
