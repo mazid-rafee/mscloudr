@@ -456,7 +456,7 @@ def fit(
             optimizer=optimizer,
             sampler_generator=sampler_generator,
             loaders=loaders,
-            map_location=device,
+            map_location="cpu",
             restore_rng=True,
         )
         start_epoch = (
