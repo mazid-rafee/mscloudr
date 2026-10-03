@@ -6,8 +6,11 @@ pilot subset while allowing controlled bridge-parameterization experiments.
 
 The canonical_alpha option uses alpha=t/T with the historical discrete
 uniform timestep sampler. Therefore t~Uniform{0,...,T} induces a uniform
-training measure over the physical corruption grid {0,1/T,...,1} while
-preserving the legacy raw-t conditioning support exactly.
+training measure over the physical corruption grid {0,1/T,...,1}.
+
+The ``--conditioning physical_alpha`` option keeps a schedule's bridge-state
+sampling measure unchanged but replaces schedule-dependent raw-t conditioning
+with the canonical physical coordinate c=T*alpha.
 """
 
 from __future__ import annotations
@@ -37,6 +40,11 @@ from mscloudr.models import (
 )
 from mscloudr.reproducibility import make_torch_generator, seed_everything
 from mscloudr.runner import fit
+from mscloudr.training import (
+    PHYSICAL_ALPHA_CONDITIONING,
+    RAW_T_CONDITIONING,
+    SUPPORTED_CONDITIONING_MODES,
+)
 
 
 DEFAULT_PILOT_EPOCHS = 25
@@ -58,6 +66,16 @@ def build_parser():
         "original",
         "mr_r3",
         "canonical_alpha",
+    )
+    parser.add_argument(
+        "--conditioning",
+        choices=SUPPORTED_CONDITIONING_MODES,
+        default=RAW_T_CONDITIONING,
+        help=(
+            "Coordinate passed to the legacy time embedding. raw_t reproduces "
+            "historical DB-CR. physical_alpha passes c=T*alpha while leaving "
+            "the selected schedule's bridge-state sampling measure unchanged."
+        ),
     )
     return parser
 
@@ -86,6 +104,26 @@ def _resolve_pilot_schedule(name: str):
             None,
         )
     return base.canonical_schedule(name)
+
+
+def _conditioning_metadata(mode: str) -> dict:
+    if mode == RAW_T_CONDITIONING:
+        return {
+            "conditioning_mode": RAW_T_CONDITIONING,
+            "conditioning_identity": "legacy_raw_t_stage_bias",
+            "conditioning_coordinate": "schedule_parameter_t",
+            "conditioning_definition": "c=t",
+            "coordinate_invariant_conditioning": False,
+        }
+    if mode == PHYSICAL_ALPHA_CONDITIONING:
+        return {
+            "conditioning_mode": PHYSICAL_ALPHA_CONDITIONING,
+            "conditioning_identity": "physical_alpha_scaled_T_stage_bias",
+            "conditioning_coordinate": "physical_alpha_scaled_by_T",
+            "conditioning_definition": "c=T*alpha",
+            "coordinate_invariant_conditioning": True,
+        }
+    raise ValueError(f"unsupported conditioning mode: {mode!r}")
 
 
 def run(args):
@@ -159,6 +197,7 @@ def run(args):
             "paper_grade": False,
         }
     )
+    metadata.update(_conditioning_metadata(args.conditioning))
 
     if schedule_name == "canonical_alpha":
         metadata.update(
@@ -170,8 +209,6 @@ def run(args):
                     "t~Uniform{0,...,T}; alpha=t/T; "
                     "q(alpha)=Uniform{0,1/T,...,1}"
                 ),
-                "conditioning_identity": "legacy_raw_t_stage_bias",
-                "conditioning_coordinate": "t=T*alpha_on_discrete_grid",
                 "canonical_alpha_direct": True,
             }
         )
@@ -180,6 +217,9 @@ def run(args):
             {
                 "bridge_coordinate": "schedule_induced_alpha",
                 "training_bridge_measure": "uniform_discrete_t",
+                "training_bridge_measure_definition": (
+                    "t~Uniform{0,...,T}; alpha=schedule(t)"
+                ),
                 "canonical_alpha_direct": False,
             }
         )
@@ -210,6 +250,8 @@ def run(args):
                 "model_identity": "legacy_dbcr",
                 "trainable_parameters": trainable_parameters,
                 "schedule_name": schedule_name,
+                "conditioning_mode": args.conditioning,
+                "conditioning_coordinate": metadata["conditioning_coordinate"],
                 "bridge_coordinate": metadata["bridge_coordinate"],
                 "training_bridge_measure": metadata[
                     "training_bridge_measure"
@@ -255,6 +297,7 @@ def run(args):
         epochs=args.epochs,
         device=device,
         model_identity="legacy_dbcr",
+        conditioning_mode=args.conditioning,
         lr=args.lr,
         run_metadata=metadata,
         resume_from=args.resume,
