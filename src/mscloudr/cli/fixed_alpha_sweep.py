@@ -2,9 +2,12 @@
 
 This diagnostic evaluates a trained checkpoint at the same physical bridge
 states x_alpha = (1-alpha) * clean + alpha * cloudy across a user-specified
-alpha grid. The bridge state is therefore schedule-independent. The model's
-time-conditioning value is recovered by inverting the schedule that was used
-for training, then rounding to the nearest discrete training timestep.
+alpha grid. The bridge state is therefore schedule-independent.
+
+For historical raw-t checkpoints, the model conditioning value is recovered by
+inverting the schedule and rounding to the nearest discrete training timestep.
+For coordinate-invariant checkpoints, the model receives c=T*alpha directly,
+matching training and avoiding schedule-dependent conditioning semantics.
 
 Both audited full-data checkpoints and fixed 10% pilot checkpoints are
 supported. The default split is validation, not test, because this command is
@@ -43,6 +46,11 @@ from mscloudr.models import (
     count_legacy_parameters,
 )
 from mscloudr.reproducibility import seed_everything
+from mscloudr.training import (
+    PHYSICAL_ALPHA_CONDITIONING,
+    RAW_T_CONDITIONING,
+    SUPPORTED_CONDITIONING_MODES,
+)
 
 
 DEFAULT_ALPHAS = tuple(i / 10.0 for i in range(11))
@@ -125,35 +133,60 @@ def normalized_time_from_alpha(alpha: float, schedule_name: str) -> float:
     raise ValueError(f"unsupported schedule: {schedule_name!r}")
 
 
+def conditioning_mode_from_metadata(metadata: dict) -> str:
+    mode = metadata.get("conditioning_mode")
+    if mode in SUPPORTED_CONDITIONING_MODES:
+        return str(mode)
+
+    # Backward compatibility for historical checkpoints that predate the
+    # explicit conditioning_mode field.
+    if metadata.get("conditioning_identity") == "physical_alpha_scaled_T_stage_bias":
+        return PHYSICAL_ALPHA_CONDITIONING
+    return RAW_T_CONDITIONING
+
+
 def conditioning_for_alpha(
     alpha: float,
     *,
     schedule_name: str,
     total_steps: int,
-) -> dict[str, float | int]:
-    """Return continuous/rounded timestep and realized conditioning alpha."""
+    conditioning_mode: str = RAW_T_CONDITIONING,
+) -> dict[str, float | int | str]:
+    """Resolve schedule location and the actual model conditioning coordinate."""
 
     s = normalized_time_from_alpha(alpha, schedule_name)
     t_continuous = s * float(total_steps)
     t_rounded = int(round(t_continuous))
     t_rounded = max(0, min(int(total_steps), t_rounded))
 
-    schedule = get_bridge_schedule(
-        schedule_name,
-        mean_reversion_rate=3.0,
-    )
-    realized = float(
-        schedule(
-            torch.tensor([float(t_rounded)], dtype=torch.float32),
-            total_steps,
-        )[0].item()
-    )
+    mode = str(conditioning_mode)
+    if mode not in SUPPORTED_CONDITIONING_MODES:
+        raise ValueError(f"unsupported conditioning mode: {mode!r}")
+
+    if mode == PHYSICAL_ALPHA_CONDITIONING:
+        model_value = float(alpha) * float(total_steps)
+        realized_alpha = float(alpha)
+    else:
+        model_value = float(t_rounded)
+        schedule = get_bridge_schedule(
+            schedule_name,
+            mean_reversion_rate=3.0,
+        )
+        realized_alpha = float(
+            schedule(
+                torch.tensor([float(t_rounded)], dtype=torch.float32),
+                total_steps,
+            )[0].item()
+        )
+
     return {
         "normalized_time": float(s),
         "t_continuous": float(t_continuous),
         "t_rounded": int(t_rounded),
-        "conditioning_alpha": realized,
-        "conditioning_alpha_error": realized - float(alpha),
+        "model_conditioning_mode": mode,
+        "model_conditioning_value": float(model_value),
+        "conditioning_alpha": float(realized_alpha),
+        "conditioning_alpha_error": float(realized_alpha) - float(alpha),
     }
 
 
@@ -304,6 +337,7 @@ def run(args: argparse.Namespace) -> dict:
     model.eval()
 
     schedule_name = metadata["schedule_name"]
+    conditioning_mode = conditioning_mode_from_metadata(metadata)
     total_steps = int(metadata["total_steps"])
     split_size = len(datasets.as_dict()[args.split])
     total_batches = len(loader)
@@ -316,6 +350,7 @@ def run(args: argparse.Namespace) -> dict:
                 "checkpoint": str(checkpoint_path),
                 "checkpoint_epoch": int(payload.get("epoch", 0)),
                 "schedule_name": schedule_name,
+                "conditioning_mode": conditioning_mode,
                 "split_protocol": metadata["split_protocol"],
                 "dataset_profile": membership["kind"],
                 "split": args.split,
@@ -336,8 +371,11 @@ def run(args: argparse.Namespace) -> dict:
                 alpha,
                 schedule_name=schedule_name,
                 total_steps=total_steps,
+                conditioning_mode=conditioning_mode,
             )
-            t_value = int(conditioning["t_rounded"])
+            model_conditioning_value = float(
+                conditioning["model_conditioning_value"]
+            )
             accumulator = ReferenceMetricAccumulator()
             num_samples = 0
             num_batches = 0
@@ -356,13 +394,13 @@ def run(args: argparse.Namespace) -> dict:
                     cloudy,
                     torch.tensor(alpha, device=device, dtype=target.dtype),
                 )
-                timesteps = torch.full(
+                model_conditioning = torch.full(
                     (target.shape[0],),
-                    t_value,
+                    model_conditioning_value,
                     device=device,
-                    dtype=torch.long,
+                    dtype=torch.float32,
                 )
-                prediction = model(bridge_state, timesteps, sar)
+                prediction = model(bridge_state, model_conditioning, sar)
                 accumulator.update_batch(target, prediction)
 
                 num_samples += int(target.shape[0])
@@ -377,10 +415,10 @@ def run(args: argparse.Namespace) -> dict:
                 ):
                     running, _ = _metrics_with_l1(accumulator)
                     print(
-                        "alpha={alpha:.2f} t={t} batch={batch}/{total} "
+                        "alpha={alpha:.2f} c={c:.3f} batch={batch}/{total} "
                         "samples={samples} L1={l1:.6f} PSNR={psnr:.4f}".format(
                             alpha=alpha,
-                            t=t_value,
+                            c=model_conditioning_value,
                             batch=batch_number,
                             total=total_batches,
                             samples=num_samples,
@@ -402,6 +440,11 @@ def run(args: argparse.Namespace) -> dict:
                 }
             )
 
+    time_conditioning = (
+        "physical_alpha_scaled_by_total_steps"
+        if conditioning_mode == PHYSICAL_ALPHA_CONDITIONING
+        else "inverse_training_schedule_then_nearest_integer_timestep"
+    )
     output_payload = {
         "format_version": 1,
         "diagnostic": "fixed_physical_alpha_sweep",
@@ -409,6 +452,7 @@ def run(args: argparse.Namespace) -> dict:
         "checkpoint_epoch": int(payload.get("epoch", 0)),
         "model_identity": metadata["model_identity"],
         "schedule_name": schedule_name,
+        "conditioning_mode": conditioning_mode,
         "total_steps": total_steps,
         "split": args.split,
         "split_protocol": metadata["split_protocol"],
@@ -417,9 +461,7 @@ def run(args: argparse.Namespace) -> dict:
         "batch_size": int(args.batch_size),
         "max_batches": args.max_batches,
         "bridge_state_definition": "x_alpha=(1-alpha)*target+alpha*cloudy",
-        "time_conditioning": (
-            "inverse_training_schedule_then_nearest_integer_timestep"
-        ),
+        "time_conditioning": time_conditioning,
         "metric_reference_repo": REFERENCE_REPO,
         "metric_reference_commit": REFERENCE_COMMIT,
         "paper_grade": False,
