@@ -52,6 +52,26 @@ def _validate_total_steps(total_steps: int) -> int:
     return total_steps
 
 
+def linear_alpha(
+    t,
+    total_steps: int,
+) -> torch.Tensor:
+    """Canonical physical-corruption coordinate alpha=t/T.
+
+    Combined with the historical uniform discrete timestep sampler, this makes
+    the training measure uniform over the physical bridge grid
+    {0, 1/T, ..., 1}.  Unlike sine or mean-reverting parameterizations, the
+    conditioning coordinate and physical corruption coordinate are identical
+    up to the scale factor T.
+    """
+
+    total_steps = _validate_total_steps(
+        total_steps
+    )
+    t = _float_tensor(t)
+    return t / float(total_steps)
+
+
 def sine_alpha(
     t,
     total_steps: int,
@@ -115,7 +135,7 @@ def get_bridge_schedule(
     *,
     mean_reversion_rate: float = 3.0,
 ) -> BridgeSchedule:
-    """Resolve a named schedule without touching model code."""
+    """Resolve a named parameterization without touching model code."""
 
     normalized = (
         str(name)
@@ -123,6 +143,14 @@ def get_bridge_schedule(
         .lower()
         .replace("-", "_")
     )
+
+    if normalized in {
+        "canonical_alpha",
+        "canonical",
+        "linear",
+        "uniform_alpha",
+    }:
+        return linear_alpha
 
     if normalized in {
         "original",
