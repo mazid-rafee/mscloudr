@@ -6,7 +6,8 @@ must use.
 
 Random-t training and random-t validation require an explicit sampler
 torch.Generator. Endpoint validation is deterministic and schedule independent:
-x_T is exactly the cloudy optical observation and t=T.
+x_T is exactly the cloudy optical observation and the endpoint conditioning
+coordinate is T for both raw-t and physical-alpha conditioning.
 
 The canonical checkpoint-selection metric for NFE=1 experiments is
 val_endpoint_l1. Random-t validation is diagnostic only.
@@ -29,6 +30,13 @@ from .bridge import (
 
 CHECKPOINT_SELECTION_METRIC = "val_endpoint_l1"
 DIAGNOSTIC_RANDOM_T_METRIC = "val_random_t_l1"
+
+RAW_T_CONDITIONING = "raw_t"
+PHYSICAL_ALPHA_CONDITIONING = "physical_alpha"
+SUPPORTED_CONDITIONING_MODES = (
+    RAW_T_CONDITIONING,
+    PHYSICAL_ALPHA_CONDITIONING,
+)
 
 
 @dataclass
@@ -110,6 +118,44 @@ def _batch_alpha(
     ).view(-1, 1, 1, 1)
 
 
+def model_conditioning_coordinate(
+    timesteps: torch.Tensor,
+    alpha: torch.Tensor,
+    *,
+    total_steps: int,
+    conditioning_mode: str = RAW_T_CONDITIONING,
+) -> torch.Tensor:
+    """Map a bridge state to the scalar coordinate seen by the network.
+
+    ``raw_t`` reproduces historical DB-CR conditioning exactly: the model sees
+    the sampled schedule parameter t.
+
+    ``physical_alpha`` removes schedule-dependent coordinate semantics: the
+    model sees c = T * alpha, where alpha is the actual physical interpolation
+    coefficient used to construct x_alpha. Scaling by T preserves the legacy
+    numerical conditioning range [0, T] while making equal physical bridge
+    states receive equal conditioning values under every schedule.
+    """
+
+    total_steps = int(total_steps)
+    if total_steps <= 0:
+        raise ValueError("total_steps must be positive")
+
+    mode = str(conditioning_mode).strip().lower()
+    if mode not in SUPPORTED_CONDITIONING_MODES:
+        raise ValueError(
+            f"unsupported conditioning mode: {conditioning_mode!r}"
+        )
+
+    if mode == RAW_T_CONDITIONING:
+        return timesteps
+
+    return alpha.to(
+        device=timesteps.device,
+        dtype=torch.float32,
+    ) * float(total_steps)
+
+
 def random_t_bridge_step(
     model: nn.Module,
     batch: Mapping[str, torch.Tensor],
@@ -117,6 +163,7 @@ def random_t_bridge_step(
     schedule: BridgeSchedule,
     total_steps: int,
     sampler_generator: torch.Generator,
+    conditioning_mode: str = RAW_T_CONDITIONING,
 ) -> BridgeStepResult:
     """Compute one random-t direct-x0-prediction L1 batch.
 
@@ -143,10 +190,16 @@ def random_t_bridge_step(
         cloudy,
         alpha,
     )
+    conditioning = model_conditioning_coordinate(
+        timesteps,
+        alpha,
+        total_steps=total_steps,
+        conditioning_mode=conditioning_mode,
+    )
 
     prediction = model(
         bridge_state,
-        timesteps,
+        conditioning,
         sar,
     )
     if prediction.shape != target.shape:
@@ -179,6 +232,7 @@ def training_step(
     schedule: BridgeSchedule,
     total_steps: int,
     sampler_generator: torch.Generator,
+    conditioning_mode: str = RAW_T_CONDITIONING,
 ) -> BridgeStepResult:
     """Training computation before optimizer zero_grad/backward/step."""
 
@@ -188,6 +242,7 @@ def training_step(
         schedule=schedule,
         total_steps=total_steps,
         sampler_generator=sampler_generator,
+        conditioning_mode=conditioning_mode,
     )
 
 
@@ -198,6 +253,7 @@ def random_t_validation_step(
     schedule: BridgeSchedule,
     total_steps: int,
     sampler_generator: torch.Generator,
+    conditioning_mode: str = RAW_T_CONDITIONING,
 ) -> BridgeStepResult:
     """Diagnostic validation under the schedule-dependent random-t measure."""
 
@@ -208,6 +264,7 @@ def random_t_validation_step(
             schedule=schedule,
             total_steps=total_steps,
             sampler_generator=sampler_generator,
+            conditioning_mode=conditioning_mode,
         )
 
 
@@ -216,12 +273,14 @@ def endpoint_validation_step(
     batch: Mapping[str, torch.Tensor],
     *,
     total_steps: int,
+    conditioning_mode: str = RAW_T_CONDITIONING,
 ) -> BridgeStepResult:
     """Schedule-invariant endpoint validation for NFE=1 checkpoint selection.
 
     Since every admissible bridge schedule satisfies alpha(T)=1, the endpoint
-    model input is constructed directly as x_T = cloudy. No schedule callable
-    and no sampler RNG are accepted here by design.
+    model input is constructed directly as x_T = cloudy. Both supported
+    conditioning modes equal T at alpha=1, so endpoint inference remains
+    identical in coordinate value.
     """
 
     total_steps = int(
@@ -243,16 +302,28 @@ def endpoint_validation_step(
         device=target.device,
         dtype=torch.long,
     )
-    alpha = torch.ones(
-        (batch_size, 1, 1, 1),
+    alpha_vector = torch.ones(
+        (batch_size,),
         device=target.device,
         dtype=target.dtype,
+    )
+    alpha = alpha_vector.view(
+        batch_size,
+        1,
+        1,
+        1,
+    )
+    conditioning = model_conditioning_coordinate(
+        timesteps,
+        alpha_vector,
+        total_steps=total_steps,
+        conditioning_mode=conditioning_mode,
     )
 
     with torch.no_grad():
         prediction = model(
             cloudy,
-            timesteps,
+            conditioning,
             sar,
         )
         if prediction.shape != target.shape:
