@@ -25,6 +25,7 @@ dev = [
 mscloudr-audit-dataset = "mscloudr.cli.audit_dataset:main"
 mscloudr-audit-split = "mscloudr.cli.audit_split:main"
 mscloudr-train = "mscloudr.cli.train:main"
+mscloudr-eval = "mscloudr.cli.eval:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
