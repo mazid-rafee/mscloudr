@@ -26,6 +26,7 @@ from mscloudr.models import (
     count_legacy_parameters,
 )
 from mscloudr.reproducibility import seed_everything
+from mscloudr.training import RAW_T_CONDITIONING, SUPPORTED_CONDITIONING_MODES
 
 
 def build_parser():
@@ -35,6 +36,13 @@ def build_parser():
         "ROI-disjoint, season/ROI-stratified SEN12MS-CR pilot test subset."
     )
     return parser
+
+
+def _conditioning_mode(metadata: dict[str, Any]) -> str:
+    mode = metadata.get("conditioning_mode", RAW_T_CONDITIONING)
+    if mode not in SUPPORTED_CONDITIONING_MODES:
+        raise ValueError(f"unsupported conditioning mode in checkpoint: {mode!r}")
+    return str(mode)
 
 
 def _validate_pilot_checkpoint(payload: dict[str, Any]) -> dict[str, Any]:
@@ -62,6 +70,7 @@ def _validate_pilot_checkpoint(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             "unsupported controlled schedule identity in checkpoint metadata"
         )
+    _conditioning_mode(metadata)
     if int(metadata.get("total_steps", 0)) <= 0:
         raise ValueError("checkpoint metadata has invalid total_steps")
     return metadata
@@ -81,6 +90,7 @@ def run(args) -> dict[str, Any]:
     checkpoint_path = Path(args.checkpoint)
     payload = base._torch_load_payload(checkpoint_path)
     metadata = _validate_pilot_checkpoint(payload)
+    conditioning_mode = _conditioning_mode(metadata)
 
     device = base.resolve_device(args.device)
     train_seed = base._train_seed_from_metadata(metadata)
@@ -141,11 +151,13 @@ def run(args) -> dict[str, Any]:
                 "device": str(device),
                 "model_identity": "legacy_dbcr",
                 "schedule_name": metadata["schedule_name"],
+                "conditioning_mode": conditioning_mode,
                 "split": "test",
                 "data_profile": metadata.get("data_profile"),
                 "test_samples": len(datasets.test),
                 "nfe": 1,
                 "inference": "endpoint_direct_x0",
+                "endpoint_conditioning_value": int(metadata["total_steps"]),
                 "paper_grade": False,
             },
             indent=2,
@@ -154,6 +166,8 @@ def run(args) -> dict[str, Any]:
         flush=True,
     )
 
+    # At alpha=1, raw-t and physical-alpha conditioning both equal T. The
+    # canonical endpoint evaluator therefore remains exactly valid for both.
     result: EvaluationResult = evaluate_nfe1_endpoint(
         model,
         loaders.test,
@@ -181,9 +195,12 @@ def run(args) -> dict[str, Any]:
         ),
         "model_identity": metadata["model_identity"],
         "schedule_name": metadata["schedule_name"],
+        "conditioning_mode": conditioning_mode,
+        "conditioning_identity": metadata.get("conditioning_identity"),
         "total_steps": int(metadata["total_steps"]),
         "nfe": 1,
         "inference": "endpoint_direct_x0",
+        "endpoint_conditioning_value": int(metadata["total_steps"]),
         "schedule_used_during_inference": False,
         "split": "test",
         "split_protocol": PILOT_PROTOCOL,
