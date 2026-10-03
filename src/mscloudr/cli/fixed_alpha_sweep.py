@@ -1,13 +1,14 @@
-"""Fixed-physical-alpha diagnostic for pilot DB-CR checkpoints.
+"""Fixed-physical-alpha diagnostic for DB-CR checkpoints.
 
-This diagnostic evaluates one trained checkpoint at the same physical bridge
+This diagnostic evaluates a trained checkpoint at the same physical bridge
 states x_alpha = (1-alpha) * clean + alpha * cloudy across a user-specified
-alpha grid.  The bridge state is therefore schedule-independent.  The model's
+alpha grid. The bridge state is therefore schedule-independent. The model's
 time-conditioning value is recovered by inverting the schedule that was used
 for training, then rounding to the nearest discrete training timestep.
 
-The default split is validation, not test, because this command is intended for
-method exploration rather than final reporting.
+Both audited full-data checkpoints and fixed 10% pilot checkpoints are
+supported. The default split is validation, not test, because this command is
+intended for method exploration rather than final reporting.
 """
 
 from __future__ import annotations
@@ -23,11 +24,18 @@ from mscloudr.bridge import get_bridge_schedule, make_bridge_state
 from mscloudr.cli import eval as eval_base
 from mscloudr.cli import pilot_eval
 from mscloudr.data import (
+    REFERENCE_PROTOCOL,
     build_reference_dataloaders,
+    build_reference_datasets,
     discover_sen12mscr,
     load_ignored_sample_ids,
+    reference_split_audit,
 )
-from mscloudr.data.pilot import build_pilot_datasets, pilot_split_audit
+from mscloudr.data.pilot import (
+    PILOT_PROTOCOL,
+    build_pilot_datasets,
+    pilot_split_audit,
+)
 from mscloudr.metrics import REFERENCE_COMMIT, REFERENCE_REPO, ReferenceMetricAccumulator
 from mscloudr.models import (
     LEGACY_DBCR_PARAMETER_COUNT,
@@ -43,8 +51,8 @@ DEFAULT_ALPHAS = tuple(i / 10.0 for i in range(11))
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate a pilot DB-CR checkpoint at fixed physical bridge "
-            "corruption levels alpha."
+            "Evaluate an audited full-data or pilot DB-CR checkpoint at fixed "
+            "physical bridge corruption levels alpha."
         )
     )
     parser.add_argument("--checkpoint", required=True)
@@ -59,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="val",
         help=(
             "Dataset split for the diagnostic. Validation is the default so "
-            "the held-out test subset is not repeatedly used for method design."
+            "the held-out test split is not repeatedly used for method design."
         ),
     )
     parser.add_argument(
@@ -173,6 +181,75 @@ def _metrics_with_l1(accumulator: ReferenceMetricAccumulator) -> tuple[dict, dic
     return metrics, counts
 
 
+def _validate_and_build_datasets(payload, discovery):
+    """Dispatch to the dataset protocol recorded in checkpoint provenance."""
+
+    raw_metadata = payload.get("run_metadata")
+    if not isinstance(raw_metadata, dict):
+        raise ValueError("checkpoint is missing run_metadata")
+    protocol = raw_metadata.get("split_protocol")
+
+    if protocol == PILOT_PROTOCOL:
+        metadata = pilot_eval._validate_pilot_checkpoint(payload)
+        datasets, pilot_manifest = build_pilot_datasets(
+            discovery.samples,
+            include_sample_id=True,
+            strict_channels=True,
+            verify_frozen_membership=True,
+        )
+        split_audit = pilot_split_audit(pilot_manifest)
+        if metadata.get("split_audit") != split_audit:
+            raise ValueError(
+                "current pilot split audit does not match checkpoint provenance"
+            )
+        if (
+            metadata.get("pilot_manifest_sample_ids_sha256")
+            != pilot_manifest["sample_ids_sha256"]
+        ):
+            raise ValueError(
+                "pilot sample-ID fingerprint does not match checkpoint provenance"
+            )
+        membership = {
+            "kind": "pilot10",
+            "sample_ids_sha256": pilot_manifest["sample_ids_sha256"],
+        }
+        return metadata, datasets, split_audit, membership
+
+    if protocol == REFERENCE_PROTOCOL:
+        metadata = eval_base._validate_checkpoint(
+            payload,
+            allow_smoke_checkpoint=False,
+        )
+        datasets = build_reference_datasets(
+            discovery.samples,
+            include_sample_id=True,
+            strict_channels=True,
+            verify_frozen_membership=True,
+        )
+        split_audit = reference_split_audit(
+            {
+                split: dataset.samples
+                for split, dataset in datasets.as_dict().items()
+            }
+        )
+        if metadata.get("split_audit") != split_audit:
+            raise ValueError(
+                "current full-data split audit does not match checkpoint provenance"
+            )
+        membership = {
+            "kind": "full_reference",
+            "dataset_sample_ids_sha256": split_audit[
+                "dataset_sample_ids_sha256"
+            ],
+        }
+        return metadata, datasets, split_audit, membership
+
+    raise ValueError(
+        "unsupported checkpoint split_protocol for fixed-alpha sweep: "
+        f"{protocol!r}"
+    )
+
+
 def run(args: argparse.Namespace) -> dict:
     if args.batch_size <= 0:
         raise ValueError("batch-size must be positive")
@@ -186,7 +263,17 @@ def run(args: argparse.Namespace) -> dict:
     alphas = parse_alphas(args.alphas)
     checkpoint_path = Path(args.checkpoint)
     payload = eval_base._torch_load_payload(checkpoint_path)
-    metadata = pilot_eval._validate_pilot_checkpoint(payload)
+
+    ignored = load_ignored_sample_ids(args.ignore_file)
+    discovery = discover_sen12mscr(
+        args.data_root,
+        ignored_sample_ids=ignored,
+        strict_counterparts=True,
+    )
+    metadata, datasets, split_audit, membership = _validate_and_build_datasets(
+        payload,
+        discovery,
+    )
 
     device = eval_base.resolve_device(args.device)
     train_seed = eval_base._train_seed_from_metadata(metadata)
@@ -196,28 +283,6 @@ def run(args: argparse.Namespace) -> dict:
             metadata
         ),
     )
-
-    ignored = load_ignored_sample_ids(args.ignore_file)
-    discovery = discover_sen12mscr(
-        args.data_root,
-        ignored_sample_ids=ignored,
-        strict_counterparts=True,
-    )
-    datasets, pilot_manifest = build_pilot_datasets(
-        discovery.samples,
-        include_sample_id=True,
-        strict_channels=True,
-        verify_frozen_membership=True,
-    )
-    split_audit = pilot_split_audit(pilot_manifest)
-
-    if metadata.get("split_audit") != split_audit:
-        raise ValueError("current pilot split audit does not match checkpoint provenance")
-    if (
-        metadata.get("pilot_manifest_sample_ids_sha256")
-        != pilot_manifest["sample_ids_sha256"]
-    ):
-        raise ValueError("pilot sample-ID fingerprint does not match checkpoint provenance")
 
     loaders = build_reference_dataloaders(
         datasets,
@@ -248,6 +313,8 @@ def run(args: argparse.Namespace) -> dict:
                 "checkpoint": str(checkpoint_path),
                 "checkpoint_epoch": int(payload.get("epoch", 0)),
                 "schedule_name": schedule_name,
+                "split_protocol": metadata["split_protocol"],
+                "dataset_profile": membership["kind"],
                 "split": args.split,
                 "split_samples": split_size,
                 "alphas": alphas,
@@ -342,9 +409,8 @@ def run(args: argparse.Namespace) -> dict:
         "total_steps": total_steps,
         "split": args.split,
         "split_protocol": metadata["split_protocol"],
-        "pilot_manifest_sample_ids_sha256": pilot_manifest[
-            "sample_ids_sha256"
-        ],
+        "split_audit": split_audit,
+        "dataset_membership": membership,
         "batch_size": int(args.batch_size),
         "max_batches": args.max_batches,
         "bridge_state_definition": "x_alpha=(1-alpha)*target+alpha*cloudy",
