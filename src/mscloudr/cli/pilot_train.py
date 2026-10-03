@@ -1,9 +1,13 @@
 """Fast 10%-data / 25-epoch DB-CR pilot training command.
 
-This command leaves the audited full-data trainer untouched.  It reuses the
-same model, optimizer, bridge schedules, checkpointing, and validation logic,
-but swaps the full SEN12MS-CR datasets for the deterministic pilot subset from
-``mscloudr.data.pilot``.
+This command leaves the audited full-data trainer untouched. It reuses the
+same model, optimizer, checkpointing, validation logic, and deterministic
+pilot subset while allowing controlled bridge-parameterization experiments.
+
+The canonical_alpha option uses alpha=t/T with the historical discrete
+uniform timestep sampler. Therefore t~Uniform{0,...,T} induces a uniform
+training measure over the physical corruption grid {0,1/T,...,1} while
+preserving the legacy raw-t conditioning support exactly.
 """
 
 from __future__ import annotations
@@ -11,6 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from mscloudr.bridge import get_bridge_schedule
 from mscloudr.cli import train as base
 from mscloudr.data import (
     build_reference_dataloaders,
@@ -44,6 +49,16 @@ def build_parser():
         "ROI-disjoint, season/ROI-stratified SEN12MS-CR pilot subset."
     )
     parser.set_defaults(epochs=DEFAULT_PILOT_EPOCHS)
+
+    # The audited full-data CLI intentionally exposes only its historical
+    # schedules. The pilot branch adds canonical_alpha without modifying that
+    # paper-grade command.
+    schedule_action = parser._option_string_actions["--schedule"]
+    schedule_action.choices = (
+        "original",
+        "mr_r3",
+        "canonical_alpha",
+    )
     return parser
 
 
@@ -63,11 +78,21 @@ def _write_or_validate_manifest(run_dir: Path, manifest: dict, *, resume: bool) 
     save_pilot_manifest(manifest, path)
 
 
+def _resolve_pilot_schedule(name: str):
+    if name == "canonical_alpha":
+        return (
+            "canonical_alpha",
+            get_bridge_schedule("canonical_alpha"),
+            None,
+        )
+    return base.canonical_schedule(name)
+
+
 def run(args):
     base.validate_cli_args(args)
     run_dir = base._prepare_output_dir(args)
     device = base.resolve_device(args.device)
-    schedule_name, schedule, mr_rate = base.canonical_schedule(args.schedule)
+    schedule_name, schedule, mr_rate = _resolve_pilot_schedule(args.schedule)
 
     seed_everything(
         args.train_seed,
@@ -135,6 +160,30 @@ def run(args):
         }
     )
 
+    if schedule_name == "canonical_alpha":
+        metadata.update(
+            {
+                "bridge_coordinate": "physical_alpha",
+                "bridge_parameterization": "alpha=t/T",
+                "training_bridge_measure": "uniform_discrete_alpha_grid",
+                "training_bridge_measure_definition": (
+                    "t~Uniform{0,...,T}; alpha=t/T; "
+                    "q(alpha)=Uniform{0,1/T,...,1}"
+                ),
+                "conditioning_identity": "legacy_raw_t_stage_bias",
+                "conditioning_coordinate": "t=T*alpha_on_discrete_grid",
+                "canonical_alpha_direct": True,
+            }
+        )
+    else:
+        metadata.update(
+            {
+                "bridge_coordinate": "schedule_induced_alpha",
+                "training_bridge_measure": "uniform_discrete_t",
+                "canonical_alpha_direct": False,
+            }
+        )
+
     config_path = run_dir / "run_config.json"
     if args.resume is None:
         base._write_json_atomic(config_path, metadata)
@@ -161,6 +210,10 @@ def run(args):
                 "model_identity": "legacy_dbcr",
                 "trainable_parameters": trainable_parameters,
                 "schedule_name": schedule_name,
+                "bridge_coordinate": metadata["bridge_coordinate"],
+                "training_bridge_measure": metadata[
+                    "training_bridge_measure"
+                ],
                 "data_profile": metadata["data_profile"],
                 "pilot_fraction": PILOT_FRACTION,
                 "pilot_subset_seed": PILOT_SEED,
