@@ -54,7 +54,11 @@ def _validate_pilot_checkpoint(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             "checkpoint was not trained with the fixed pilot10 split protocol"
         )
-    if metadata.get("schedule_name") not in {"original", "mr_r3"}:
+    if metadata.get("schedule_name") not in {
+        "original",
+        "mr_r3",
+        "canonical_alpha",
+    }:
         raise ValueError(
             "unsupported controlled schedule identity in checkpoint metadata"
         )
