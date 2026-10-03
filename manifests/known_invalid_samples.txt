@@ -1,0 +1,8 @@
+# Dataset-relative cloudy sample IDs known to be invalid in the historical
+# ms-cloudR installation. Keep machine-specific absolute paths out of version control.
+#
+# Reason verified 2026-09-29:
+# SAR file ROIs1868_summer_s1/s1_146/ROIs1868_summer_s1_146_p202.tif
+# contains 2,721 NaN pixels, first observed at [channel=1, row=22, col=254].
+# Cloudy S2 and clean S2 counterparts are finite. Channel 1 is VH.
+ROIs1868_summer_s2_cloudy/s2_cloudy_146/ROIs1868_summer_s2_cloudy_146_p202.tif

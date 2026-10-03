@@ -1,0 +1,32 @@
+{
+  "format_version": 1,
+  "dataset": "SEN12MS-CR",
+  "protocol": "uncrtaints_sen12mscr_roi_split",
+  "source_repo": "PatrickTUM/UnCRtainTS",
+  "source_commit": "5e1f1b58e993645e765b64e10b6e9c7ff828b36f",
+  "dataset_num_samples_after_ignored": 122217,
+  "dataset_sample_ids_sha256": "4ccf44fe4cb28dddcbb4b1e6deb00bed24a70106910e8ae8a2113c6700c5bae3",
+  "reference_roi_counts": {
+    "train": 155,
+    "val": 10,
+    "test": 10
+  },
+  "splits": {
+    "train": {
+      "num_roi_groups": 155,
+      "num_samples": 107142,
+      "sample_ids_sha256": "2987371bc1f28329c77c38f035eec51c5ff9699e2830a252c670eec776c4019b"
+    },
+    "val": {
+      "num_roi_groups": 10,
+      "num_samples": 7176,
+      "sample_ids_sha256": "35c03ebedb5eb01dd6f4b922ba8ad62788a82c14b3dc32055eb109dd521f8314"
+    },
+    "test": {
+      "num_roi_groups": 10,
+      "num_samples": 7899,
+      "sample_ids_sha256": "97577d0b6f73db09409ed4a7cd3ca1d533cb4b9d10c658a2a37f0d7956d5138b"
+    }
+  },
+  "note": "Counts verified on the user's local SEN12MS-CR installation after excluding one known-invalid training sample. The full unfiltered dataset implied by the reference split is train=107143, val=7176, test=7899, total=122218."
+}

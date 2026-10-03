@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Data and experiment artifacts
+data/
+datasets/
+outputs/
+runs/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.npy
+*.npz
+
+# Local configuration
+.env
+*.local.json
+
+# Keep lightweight, versioned manifests/configs
+!configs/
+!configs/**
+!manifests/
+!manifests/**

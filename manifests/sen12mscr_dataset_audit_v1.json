@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "dataset": "SEN12MS-CR",
+  "audit_date": "2026-09-29",
+  "note": "Verified local installation after excluding the one versioned known-invalid sample. Absolute machine path intentionally omitted.",
+  "counts_by_season": {
+    "ROIs1158_spring": 29117,
+    "ROIs1868_summer": 33826,
+    "ROIs1970_fall": 40941,
+    "ROIs2017_winter": 18333
+  },
+  "num_samples": 122217,
+  "num_ignored": 1,
+  "num_missing_counterparts": 0,
+  "sample_ids_sha256": "4ccf44fe4cb28dddcbb4b1e6deb00bed24a70106910e8ae8a2113c6700c5bae3",
+  "known_invalid_samples_file": "manifests/known_invalid_samples.txt"
+}
