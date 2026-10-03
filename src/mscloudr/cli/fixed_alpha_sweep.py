@@ -105,11 +105,14 @@ def parse_alphas(text: str) -> list[float]:
 
 
 def normalized_time_from_alpha(alpha: float, schedule_name: str) -> float:
-    """Invert the schedule used during training to obtain s=t/T."""
+    """Invert the training parameterization to obtain s=t/T."""
 
     alpha = float(alpha)
     if not 0.0 <= alpha <= 1.0:
         raise ValueError("alpha must lie in [0,1]")
+
+    if schedule_name == "canonical_alpha":
+        return alpha
 
     if schedule_name == "original":
         return (2.0 / math.pi) * math.asin(alpha)
