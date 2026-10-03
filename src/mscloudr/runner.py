@@ -29,6 +29,7 @@ from .checkpointing import (
 from .training import (
     CHECKPOINT_SELECTION_METRIC,
     DIAGNOSTIC_RANDOM_T_METRIC,
+    RAW_T_CONDITIONING,
     WeightedMean,
     endpoint_validation_step,
     random_t_validation_step,
@@ -150,6 +151,7 @@ def run_training_epoch(
     total_steps: int,
     sampler_generator: torch.Generator,
     device: torch.device,
+    conditioning_mode: str = RAW_T_CONDITIONING,
     max_batches: int | None = None,
     epoch: int = 1,
     progress_every: int | None = None,
@@ -181,6 +183,7 @@ def run_training_epoch(
             schedule=schedule,
             total_steps=total_steps,
             sampler_generator=sampler_generator,
+            conditioning_mode=conditioning_mode,
         )
 
         optimizer.zero_grad(
@@ -226,6 +229,7 @@ def run_validation_epoch(
     total_steps: int,
     sampler_generator: torch.Generator,
     device: torch.device,
+    conditioning_mode: str = RAW_T_CONDITIONING,
     max_batches: int | None = None,
     epoch: int = 1,
     progress_every: int | None = None,
@@ -258,11 +262,13 @@ def run_validation_epoch(
             schedule=schedule,
             total_steps=total_steps,
             sampler_generator=sampler_generator,
+            conditioning_mode=conditioning_mode,
         )
         endpoint_result = endpoint_validation_step(
             model,
             batch,
             total_steps=total_steps,
+            conditioning_mode=conditioning_mode,
         )
 
         random_meter.update(
@@ -351,6 +357,7 @@ def _checkpoint_metadata(
     epochs: int,
     optimizer: Optimizer,
     schedule_name: str,
+    conditioning_mode: str,
     model_identity: str,
     run_metadata: Mapping[str, Any] | None,
     max_train_batches: int | None,
@@ -363,6 +370,7 @@ def _checkpoint_metadata(
         {
             "model_identity": str(model_identity),
             "schedule_name": str(schedule_name),
+            "conditioning_mode": str(conditioning_mode),
             "total_steps": int(total_steps),
             "target_epochs": int(epochs),
             "optimizer": optimizer.__class__.__name__,
@@ -396,6 +404,7 @@ def fit(
     epochs: int,
     device: str | torch.device,
     model_identity: str = "legacy_dbcr",
+    conditioning_mode: str = RAW_T_CONDITIONING,
     lr: float = HISTORICAL_LEARNING_RATE,
     optimizer: Optimizer | None = None,
     run_metadata: Mapping[str, Any] | None = None,
@@ -485,6 +494,7 @@ def fit(
         epochs=epochs,
         optimizer=optimizer,
         schedule_name=schedule_name,
+        conditioning_mode=conditioning_mode,
         model_identity=model_identity,
         run_metadata=run_metadata,
         max_train_batches=max_train_batches,
@@ -503,6 +513,7 @@ def fit(
             total_steps=total_steps,
             sampler_generator=sampler_generator,
             device=device,
+            conditioning_mode=conditioning_mode,
             max_batches=max_train_batches,
             epoch=epoch,
             progress_every=progress_every,
@@ -516,6 +527,7 @@ def fit(
             total_steps=total_steps,
             sampler_generator=sampler_generator,
             device=device,
+            conditioning_mode=conditioning_mode,
             max_batches=max_val_batches,
             epoch=epoch,
             progress_every=progress_every,
