@@ -17,7 +17,13 @@ The ``--conditioning inverse_sine`` control is intentionally paired only with
 training measure as CanonicalAlpha while feeding the network the coordinate of
 DB-CR's original sine parameterization:
     c = T * (2/pi) * asin(alpha).
-This isolates conditioning-coordinate semantics from training-measure effects.
+
+The ``--conditioning inverse_mr`` control is also paired only with
+``--schedule canonical_alpha``. It keeps the same uniform physical-alpha
+training measure while feeding the r=3 mean-reverting inverse coordinate:
+    c = -(T/3) * log(1 - (1-exp(-3))*alpha).
+Together these matched-measure controls isolate conditioning-coordinate
+semantics from training-measure effects.
 """
 
 from __future__ import annotations
@@ -48,6 +54,7 @@ from mscloudr.models import (
 from mscloudr.reproducibility import make_torch_generator, seed_everything
 from mscloudr.runner import fit
 from mscloudr.training import (
+    INVERSE_MR_CONDITIONING,
     INVERSE_SINE_CONDITIONING,
     PHYSICAL_ALPHA_CONDITIONING,
     RAW_T_CONDITIONING,
@@ -82,8 +89,10 @@ def build_parser():
         help=(
             "Coordinate passed to the legacy time embedding. raw_t reproduces "
             "historical DB-CR; physical_alpha passes c=T*alpha; inverse_sine "
-            "passes c=T*(2/pi)*asin(alpha) and is restricted to "
-            "--schedule canonical_alpha for the matched-measure control."
+            "passes c=T*(2/pi)*asin(alpha); inverse_mr passes "
+            "c=-(T/3)*log(1-(1-exp(-3))*alpha). The inverse controls require "
+            "--schedule canonical_alpha so the physical-alpha measure stays "
+            "uniform."
         ),
     )
     return parser
@@ -116,14 +125,14 @@ def _resolve_pilot_schedule(name: str):
 
 
 def _validate_conditioning_schedule_pair(schedule_name: str, mode: str) -> None:
-    """Prevent accidental changes to the intended matched-measure control."""
+    """Prevent accidental changes to the intended matched-measure controls."""
 
     if (
-        mode == INVERSE_SINE_CONDITIONING
+        mode in {INVERSE_SINE_CONDITIONING, INVERSE_MR_CONDITIONING}
         and schedule_name != "canonical_alpha"
     ):
         raise ValueError(
-            "inverse_sine conditioning is a matched-measure control and "
+            f"{mode} conditioning is a matched-measure control and "
             "requires --schedule canonical_alpha"
         )
 
@@ -154,6 +163,19 @@ def _conditioning_metadata(mode: str) -> dict:
             "coordinate_invariant_conditioning": False,
             "matched_measure_control": True,
             "conditioning_reference_schedule": "original",
+        }
+    if mode == INVERSE_MR_CONDITIONING:
+        return {
+            "conditioning_mode": INVERSE_MR_CONDITIONING,
+            "conditioning_identity": "inverse_mr_r3_t_from_physical_alpha",
+            "conditioning_coordinate": "mr_r3_inverse_coordinate",
+            "conditioning_definition": (
+                "c=-(T/3)*log(1-(1-exp(-3))*alpha)"
+            ),
+            "coordinate_invariant_conditioning": False,
+            "matched_measure_control": True,
+            "conditioning_reference_schedule": "mr_r3",
+            "conditioning_reference_mean_reversion_rate": 3.0,
         }
     raise ValueError(f"unsupported conditioning mode: {mode!r}")
 
