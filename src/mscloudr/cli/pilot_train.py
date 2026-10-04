@@ -11,12 +11,25 @@ training measure over the physical corruption grid {0,1/T,...,1}.
 The ``--conditioning physical_alpha`` option keeps a schedule's bridge-state
 sampling measure unchanged but replaces schedule-dependent raw-t conditioning
 with the canonical physical coordinate c=T*alpha.
+
+The ``--endpoint-prob`` pilot control deliberately changes only the training
+measure in physical-alpha space. With canonical_alpha + physical_alpha, a
+uniform base variable u=t/T is transformed by the quantile map
+
+    alpha = u/(1-lambda),  u < 1-lambda
+            1,             u >= 1-lambda
+
+which realizes q_lambda=(1-lambda)U(0,1)+lambda*delta_1 up to the finite
+{0,...,T} grid. Endpoint checkpoint selection remains val_endpoint_l1.
 """
 
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
+
+import torch
 
 from mscloudr.bridge import get_bridge_schedule
 from mscloudr.cli import train as base
@@ -77,6 +90,16 @@ def build_parser():
             "the selected schedule's bridge-state sampling measure unchanged."
         ),
     )
+    parser.add_argument(
+        "--endpoint-prob",
+        type=float,
+        default=0.0,
+        help=(
+            "Endpoint-mixture weight lambda. A positive value requires "
+            "--schedule canonical_alpha --conditioning physical_alpha and "
+            "uses q_lambda=(1-lambda)U(0,1)+lambda*delta_1."
+        ),
+    )
     return parser
 
 
@@ -126,11 +149,94 @@ def _conditioning_metadata(mode: str) -> dict:
     raise ValueError(f"unsupported conditioning mode: {mode!r}")
 
 
+def _validate_endpoint_measure_args(
+    schedule_name: str,
+    conditioning_mode: str,
+    endpoint_probability: float,
+) -> float:
+    endpoint_probability = float(endpoint_probability)
+    if not 0.0 <= endpoint_probability < 1.0:
+        raise ValueError("endpoint-prob must satisfy 0 <= lambda < 1")
+    if endpoint_probability > 0.0:
+        if schedule_name != "canonical_alpha":
+            raise ValueError(
+                "endpoint-prob > 0 requires --schedule canonical_alpha"
+            )
+        if conditioning_mode != PHYSICAL_ALPHA_CONDITIONING:
+            raise ValueError(
+                "endpoint-prob > 0 requires --conditioning physical_alpha"
+            )
+    return endpoint_probability
+
+
+def _endpoint_mixture_schedule(endpoint_probability: float):
+    """Quantile map from uniform discrete t to an endpoint-aware alpha measure."""
+
+    endpoint_probability = float(endpoint_probability)
+    if not 0.0 < endpoint_probability < 1.0:
+        raise ValueError("endpoint mixture schedule requires 0 < lambda < 1")
+    cutoff = 1.0 - endpoint_probability
+
+    def schedule(t, total_steps: int):
+        total_steps = int(total_steps)
+        if total_steps <= 0:
+            raise ValueError("total_steps must be positive")
+        t_float = t if torch.is_tensor(t) else torch.as_tensor(t)
+        if not t_float.is_floating_point():
+            t_float = t_float.float()
+        u = t_float / float(total_steps)
+        return torch.where(
+            u < cutoff,
+            u / cutoff,
+            torch.ones_like(u),
+        )
+
+    return schedule
+
+
+def _endpoint_measure_metadata(
+    *,
+    endpoint_probability: float,
+    total_steps: int,
+) -> dict:
+    endpoint_probability = float(endpoint_probability)
+    total_steps = int(total_steps)
+    if endpoint_probability <= 0.0:
+        return {}
+
+    first_endpoint_t = int(math.ceil((1.0 - endpoint_probability) * total_steps))
+    endpoint_grid_count = total_steps - first_endpoint_t + 1
+    realized_endpoint_mass = endpoint_grid_count / float(total_steps + 1)
+
+    return {
+        "training_bridge_measure": "endpoint_mixture_uniform_alpha",
+        "training_bridge_measure_definition": (
+            "q_lambda(alpha)=(1-lambda)U(0,1)+lambda*delta(alpha=1); "
+            "implemented by quantile transform of uniform discrete t"
+        ),
+        "alpha_sampling_identity": "endpoint_mixture_quantile_transform",
+        "endpoint_probability": endpoint_probability,
+        "endpoint_probability_requested": endpoint_probability,
+        "endpoint_probability_realized_discrete": realized_endpoint_mass,
+        "endpoint_first_discrete_t": first_endpoint_t,
+        "endpoint_grid_count": endpoint_grid_count,
+        "base_measure": "uniform_physical_alpha",
+        "deployment_aware_measure": True,
+    }
+
+
 def run(args):
     base.validate_cli_args(args)
     run_dir = base._prepare_output_dir(args)
     device = base.resolve_device(args.device)
     schedule_name, schedule, mr_rate = _resolve_pilot_schedule(args.schedule)
+    endpoint_probability = _validate_endpoint_measure_args(
+        schedule_name,
+        args.conditioning,
+        args.endpoint_prob,
+    )
+    if endpoint_probability > 0.0:
+        schedule = _endpoint_mixture_schedule(endpoint_probability)
 
     seed_everything(
         args.train_seed,
@@ -224,6 +330,31 @@ def run(args):
             }
         )
 
+    if endpoint_probability > 0.0:
+        metadata.update(
+            {
+                "bridge_coordinate": "physical_alpha",
+                "bridge_parameterization": (
+                    "u=t/T; alpha=u/(1-lambda) if u<1-lambda else 1"
+                ),
+                "canonical_alpha_direct": False,
+            }
+        )
+        metadata.update(
+            _endpoint_measure_metadata(
+                endpoint_probability=endpoint_probability,
+                total_steps=args.total_steps,
+            )
+        )
+    else:
+        metadata.update(
+            {
+                "alpha_sampling_identity": "schedule_default_uniform_discrete_t",
+                "endpoint_probability": 0.0,
+                "deployment_aware_measure": False,
+            }
+        )
+
     config_path = run_dir / "run_config.json"
     if args.resume is None:
         base._write_json_atomic(config_path, metadata)
@@ -256,6 +387,11 @@ def run(args):
                 "training_bridge_measure": metadata[
                     "training_bridge_measure"
                 ],
+                "alpha_sampling_identity": metadata["alpha_sampling_identity"],
+                "endpoint_probability": metadata["endpoint_probability"],
+                "endpoint_probability_realized_discrete": metadata.get(
+                    "endpoint_probability_realized_discrete"
+                ),
                 "data_profile": metadata["data_profile"],
                 "pilot_fraction": PILOT_FRACTION,
                 "pilot_subset_seed": PILOT_SEED,
