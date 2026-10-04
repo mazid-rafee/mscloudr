@@ -20,7 +20,17 @@ uniform base variable u=t/T is transformed by the quantile map
             1,             u >= 1-lambda
 
 which realizes q_lambda=(1-lambda)U(0,1)+lambda*delta_1 up to the finite
-{0,...,T} grid. Endpoint checkpoint selection remains val_endpoint_l1.
+{0,...,T} grid.
+
+The ``--beta-a`` control provides a smooth endpoint-biased alternative. With
+canonical_alpha + physical_alpha and beta_b fixed to 1, it uses
+
+    alpha = u^(1/a),  u=t/T,
+
+which converges to alpha~Beta(a,1) with density q(alpha)=a*alpha^(a-1).
+The first intended experiment uses a=2, giving q(alpha)=2*alpha.
+
+Endpoint checkpoint selection remains val_endpoint_l1 for every measure.
 """
 
 from __future__ import annotations
@@ -100,6 +110,17 @@ def build_parser():
             "uses q_lambda=(1-lambda)U(0,1)+lambda*delta_1."
         ),
     )
+    parser.add_argument(
+        "--beta-a",
+        type=float,
+        default=1.0,
+        help=(
+            "Shape a for the smooth Beta(a,1) physical-alpha measure. "
+            "a=1 reproduces uniform alpha. a!=1 requires --schedule "
+            "canonical_alpha --conditioning physical_alpha and is mutually "
+            "exclusive with --endpoint-prob > 0."
+        ),
+    )
     return parser
 
 
@@ -154,6 +175,8 @@ def _validate_endpoint_measure_args(
     conditioning_mode: str,
     endpoint_probability: float,
 ) -> float:
+    """Backward-compatible validator for the endpoint-mixture control."""
+
     endpoint_probability = float(endpoint_probability)
     if not 0.0 <= endpoint_probability < 1.0:
         raise ValueError("endpoint-prob must satisfy 0 <= lambda < 1")
@@ -167,6 +190,40 @@ def _validate_endpoint_measure_args(
                 "endpoint-prob > 0 requires --conditioning physical_alpha"
             )
     return endpoint_probability
+
+
+def _validate_measure_args(
+    schedule_name: str,
+    conditioning_mode: str,
+    *,
+    endpoint_probability: float,
+    beta_a: float,
+) -> tuple[float, float]:
+    endpoint_probability = _validate_endpoint_measure_args(
+        schedule_name,
+        conditioning_mode,
+        endpoint_probability,
+    )
+    beta_a = float(beta_a)
+    if beta_a <= 0.0:
+        raise ValueError("beta-a must be positive")
+
+    beta_active = not math.isclose(beta_a, 1.0, rel_tol=0.0, abs_tol=1e-12)
+    if endpoint_probability > 0.0 and beta_active:
+        raise ValueError(
+            "endpoint-prob and beta-a != 1 are mutually exclusive measure controls"
+        )
+    if beta_active:
+        if schedule_name != "canonical_alpha":
+            raise ValueError(
+                "beta-a != 1 requires --schedule canonical_alpha"
+            )
+        if conditioning_mode != PHYSICAL_ALPHA_CONDITIONING:
+            raise ValueError(
+                "beta-a != 1 requires --conditioning physical_alpha"
+            )
+
+    return endpoint_probability, beta_a
 
 
 def _endpoint_mixture_schedule(endpoint_probability: float):
@@ -190,6 +247,27 @@ def _endpoint_mixture_schedule(endpoint_probability: float):
             u / cutoff,
             torch.ones_like(u),
         )
+
+    return schedule
+
+
+def _beta_a1_schedule(beta_a: float):
+    """Quantile map from uniform discrete t to a Beta(a,1) alpha measure."""
+
+    beta_a = float(beta_a)
+    if beta_a <= 0.0:
+        raise ValueError("beta-a must be positive")
+    inverse_a = 1.0 / beta_a
+
+    def schedule(t, total_steps: int):
+        total_steps = int(total_steps)
+        if total_steps <= 0:
+            raise ValueError("total_steps must be positive")
+        t_float = t if torch.is_tensor(t) else torch.as_tensor(t)
+        if not t_float.is_floating_point():
+            t_float = t_float.float()
+        u = torch.clamp(t_float / float(total_steps), 0.0, 1.0)
+        return torch.pow(u, inverse_a)
 
     return schedule
 
@@ -225,18 +303,44 @@ def _endpoint_measure_metadata(
     }
 
 
+def _beta_a1_measure_metadata(*, beta_a: float) -> dict:
+    beta_a = float(beta_a)
+    if beta_a <= 0.0:
+        raise ValueError("beta-a must be positive")
+
+    return {
+        "training_bridge_measure": "beta_a1_physical_alpha",
+        "training_bridge_measure_definition": (
+            "u=t/T with t~Uniform{0,...,T}; alpha=u^(1/a); "
+            "continuous-limit alpha~Beta(a,1)"
+        ),
+        "training_bridge_measure_density": "q(alpha)=a*alpha^(a-1)",
+        "alpha_sampling_identity": "beta_a1_quantile_transform",
+        "beta_a": beta_a,
+        "beta_b": 1.0,
+        "base_measure": "uniform_physical_alpha",
+        "smooth_endpoint_biased_measure": beta_a > 1.0,
+        "deployment_aware_measure": beta_a > 1.0,
+        "continuous_mean_alpha": beta_a / (beta_a + 1.0),
+    }
+
+
 def run(args):
     base.validate_cli_args(args)
     run_dir = base._prepare_output_dir(args)
     device = base.resolve_device(args.device)
     schedule_name, schedule, mr_rate = _resolve_pilot_schedule(args.schedule)
-    endpoint_probability = _validate_endpoint_measure_args(
+    endpoint_probability, beta_a = _validate_measure_args(
         schedule_name,
         args.conditioning,
-        args.endpoint_prob,
+        endpoint_probability=args.endpoint_prob,
+        beta_a=args.beta_a,
     )
+    beta_active = not math.isclose(beta_a, 1.0, rel_tol=0.0, abs_tol=1e-12)
     if endpoint_probability > 0.0:
         schedule = _endpoint_mixture_schedule(endpoint_probability)
+    elif beta_active:
+        schedule = _beta_a1_schedule(beta_a)
 
     seed_everything(
         args.train_seed,
@@ -338,6 +442,9 @@ def run(args):
                     "u=t/T; alpha=u/(1-lambda) if u<1-lambda else 1"
                 ),
                 "canonical_alpha_direct": False,
+                "beta_a": 1.0,
+                "beta_b": 1.0,
+                "smooth_endpoint_biased_measure": False,
             }
         )
         metadata.update(
@@ -346,11 +453,26 @@ def run(args):
                 total_steps=args.total_steps,
             )
         )
+    elif beta_active:
+        metadata.update(
+            {
+                "bridge_coordinate": "physical_alpha",
+                "bridge_parameterization": "u=t/T; alpha=u^(1/a)",
+                "canonical_alpha_direct": False,
+                "endpoint_probability": 0.0,
+                "endpoint_probability_realized_discrete": None,
+            }
+        )
+        metadata.update(_beta_a1_measure_metadata(beta_a=beta_a))
     else:
         metadata.update(
             {
                 "alpha_sampling_identity": "schedule_default_uniform_discrete_t",
                 "endpoint_probability": 0.0,
+                "endpoint_probability_realized_discrete": None,
+                "beta_a": 1.0,
+                "beta_b": 1.0,
+                "smooth_endpoint_biased_measure": False,
                 "deployment_aware_measure": False,
             }
         )
@@ -392,6 +514,9 @@ def run(args):
                 "endpoint_probability_realized_discrete": metadata.get(
                     "endpoint_probability_realized_discrete"
                 ),
+                "beta_a": metadata.get("beta_a"),
+                "beta_b": metadata.get("beta_b"),
+                "continuous_mean_alpha": metadata.get("continuous_mean_alpha"),
                 "data_profile": metadata["data_profile"],
                 "pilot_fraction": PILOT_FRACTION,
                 "pilot_subset_seed": PILOT_SEED,
