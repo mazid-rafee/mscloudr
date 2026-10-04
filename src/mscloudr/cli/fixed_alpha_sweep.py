@@ -6,8 +6,9 @@ alpha grid. The bridge state is therefore schedule-independent.
 
 For historical raw-t checkpoints, the model conditioning value is recovered by
 inverting the schedule and rounding to the nearest discrete training timestep.
-For coordinate-invariant checkpoints, the model receives c=T*alpha directly,
-matching training and avoiding schedule-dependent conditioning semantics.
+For coordinate-invariant checkpoints, the model receives c=T*alpha directly.
+For the uniform-alpha sine-coordinate control, the model receives
+c=T*(2/pi)*asin(alpha), matching its training-time conditioning semantics.
 
 Both audited full-data checkpoints and fixed 10% pilot checkpoints are
 supported. The default split is validation, not test, because this command is
@@ -47,6 +48,7 @@ from mscloudr.models import (
 )
 from mscloudr.reproducibility import seed_everything
 from mscloudr.training import (
+    INVERSE_SINE_CONDITIONING,
     PHYSICAL_ALPHA_CONDITIONING,
     RAW_T_CONDITIONING,
     SUPPORTED_CONDITIONING_MODES,
@@ -165,6 +167,13 @@ def conditioning_for_alpha(
 
     if mode == PHYSICAL_ALPHA_CONDITIONING:
         model_value = float(alpha) * float(total_steps)
+        realized_alpha = float(alpha)
+    elif mode == INVERSE_SINE_CONDITIONING:
+        model_value = (
+            float(total_steps)
+            * (2.0 / math.pi)
+            * math.asin(float(alpha))
+        )
         realized_alpha = float(alpha)
     else:
         model_value = float(t_rounded)
@@ -440,11 +449,13 @@ def run(args: argparse.Namespace) -> dict:
                 }
             )
 
-    time_conditioning = (
-        "physical_alpha_scaled_by_total_steps"
-        if conditioning_mode == PHYSICAL_ALPHA_CONDITIONING
-        else "inverse_training_schedule_then_nearest_integer_timestep"
-    )
+    if conditioning_mode == PHYSICAL_ALPHA_CONDITIONING:
+        time_conditioning = "physical_alpha_scaled_by_total_steps"
+    elif conditioning_mode == INVERSE_SINE_CONDITIONING:
+        time_conditioning = "inverse_original_sine_from_physical_alpha"
+    else:
+        time_conditioning = "inverse_training_schedule_then_nearest_integer_timestep"
+
     output_payload = {
         "format_version": 1,
         "diagnostic": "fixed_physical_alpha_sweep",
