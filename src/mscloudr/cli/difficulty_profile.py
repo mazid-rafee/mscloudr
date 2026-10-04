@@ -82,6 +82,14 @@ def run(args):
     payload["difficulty_definition"] = (
         "E(alpha)=mean_train_L1(R_theta(x_alpha,T*alpha,z),x0)"
     )
+
+    # fixed_alpha_sweep writes once before returning. Rewrite the same file so
+    # the sampler-design provenance above is persisted alongside the metrics.
+    eval_base._write_json_atomic(
+        Path(args.output),
+        payload,
+        overwrite=True,
+    )
     return payload
 
 
