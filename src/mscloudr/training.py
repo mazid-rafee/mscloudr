@@ -35,10 +35,12 @@ DIAGNOSTIC_RANDOM_T_METRIC = "val_random_t_l1"
 RAW_T_CONDITIONING = "raw_t"
 PHYSICAL_ALPHA_CONDITIONING = "physical_alpha"
 INVERSE_SINE_CONDITIONING = "inverse_sine"
+INVERSE_MR_CONDITIONING = "inverse_mr"
 SUPPORTED_CONDITIONING_MODES = (
     RAW_T_CONDITIONING,
     PHYSICAL_ALPHA_CONDITIONING,
     INVERSE_SINE_CONDITIONING,
+    INVERSE_MR_CONDITIONING,
 )
 
 
@@ -143,6 +145,12 @@ def model_conditioning_coordinate(
     unchanged: c = T * (2/pi) * asin(alpha). With canonical_alpha sampling this
     yields a uniform physical-alpha training measure but original-sine
     conditioning semantics.
+
+    ``inverse_mr`` similarly maps physical alpha to the inverse coordinate of
+    the r=3 mean-reverting schedule while leaving bridge-state sampling
+    unchanged: c = -(T/3) * log(1 - (1-exp(-3))*alpha). With canonical_alpha
+    sampling this gives the same uniform physical-alpha measure as the other
+    matched-measure controls, but MR conditioning semantics.
     """
 
     total_steps = int(total_steps)
@@ -167,9 +175,19 @@ def model_conditioning_coordinate(
         return alpha_float * float(total_steps)
 
     alpha_clamped = torch.clamp(alpha_float, 0.0, 1.0)
+
+    if mode == INVERSE_SINE_CONDITIONING:
+        return (
+            (2.0 / math.pi)
+            * torch.asin(alpha_clamped)
+            * float(total_steps)
+        )
+
+    rate = 3.0
+    one_minus_exp = 1.0 - math.exp(-rate)
     return (
-        (2.0 / math.pi)
-        * torch.asin(alpha_clamped)
+        -torch.log(1.0 - one_minus_exp * alpha_clamped)
+        / rate
         * float(total_steps)
     )
 
