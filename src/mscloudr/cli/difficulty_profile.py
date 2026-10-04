@@ -1,13 +1,18 @@
 """Training-split fixed-alpha difficulty profile for adaptive bridge measures.
 
-This diagnostic is intentionally restricted to the CanonicalAlpha pilot model
-with physical-alpha conditioning. It evaluates the checkpoint on the pilot
-TRAIN split at fixed physical corruption levels alpha and reuses the existing
-fixed-alpha metric implementation.
+This diagnostic is intentionally restricted to the CanonicalAlpha pilot model.
+It evaluates the checkpoint on the pilot TRAIN split at fixed physical
+corruption levels alpha and reuses the existing fixed-alpha metric
+implementation.
+
+CanonicalAlpha uses alpha=t/T. Therefore its historical raw-t conditioning is
+already numerically the physical coordinate c=T*alpha on the discrete training
+grid. Both canonical raw-t checkpoints and explicit physical-alpha checkpoints
+are valid for this analysis.
 
 The resulting L1 curve
 
-    E(alpha) = E_train[|R_theta(x_alpha, T*alpha, z) - x0|]
+    E(alpha) = E_train[|R_theta(x_alpha, c(alpha), z) - x0|]
 
 is intended for designing a future adaptive training measure without using
 validation or test information.
@@ -19,7 +24,10 @@ from pathlib import Path
 
 from mscloudr.cli import eval as eval_base
 from mscloudr.cli import fixed_alpha_sweep
-from mscloudr.training import PHYSICAL_ALPHA_CONDITIONING
+from mscloudr.training import (
+    PHYSICAL_ALPHA_CONDITIONING,
+    RAW_T_CONDITIONING,
+)
 
 
 def build_parser():
@@ -51,11 +59,18 @@ def _validate_checkpoint_role(checkpoint: str | Path) -> dict:
         )
 
     conditioning_mode = fixed_alpha_sweep.conditioning_mode_from_metadata(metadata)
-    if conditioning_mode != PHYSICAL_ALPHA_CONDITIONING:
+    if conditioning_mode not in {
+        RAW_T_CONDITIONING,
+        PHYSICAL_ALPHA_CONDITIONING,
+    }:
         raise ValueError(
-            "difficulty-profile design requires physical_alpha conditioning"
+            "difficulty-profile design requires canonical raw_t or "
+            "physical_alpha conditioning"
         )
 
+    # For CanonicalAlpha, alpha=t/T, so legacy raw_t conditioning satisfies
+    # t=T*alpha exactly at every discrete training-grid state. This makes the
+    # historical CanonicalAlpha pilot a valid physical-coordinate reference.
     return metadata
 
 
@@ -71,7 +86,7 @@ def run(args):
     if args.split != "train":
         raise ValueError("difficulty profile must use --split train")
 
-    _validate_checkpoint_role(args.checkpoint)
+    metadata = _validate_checkpoint_role(args.checkpoint)
 
     if args.output is None:
         args.output = str(_default_profile_output(args.checkpoint))
@@ -79,8 +94,16 @@ def run(args):
     payload = fixed_alpha_sweep.run(args)
     payload["analysis_role"] = "training_difficulty_profile_for_sampler_design"
     payload["held_out_data_used_for_sampler_design"] = False
+    payload["canonical_conditioning_equivalence"] = (
+        "canonical_alpha has alpha=t/T, so raw_t=t equals T*alpha on the "
+        "discrete training grid"
+    )
+    payload["source_checkpoint_conditioning_mode"] = (
+        fixed_alpha_sweep.conditioning_mode_from_metadata(metadata)
+    )
     payload["difficulty_definition"] = (
-        "E(alpha)=mean_train_L1(R_theta(x_alpha,T*alpha,z),x0)"
+        "E(alpha)=mean_train_L1(R_theta(x_alpha,c(alpha),z),x0); for "
+        "CanonicalAlpha c(alpha)=t=T*alpha on the discrete training grid"
     )
 
     # fixed_alpha_sweep writes once before returning. Rewrite the same file so
