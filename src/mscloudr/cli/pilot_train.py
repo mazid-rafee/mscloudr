@@ -11,6 +11,13 @@ training measure over the physical corruption grid {0,1/T,...,1}.
 The ``--conditioning physical_alpha`` option keeps a schedule's bridge-state
 sampling measure unchanged but replaces schedule-dependent raw-t conditioning
 with the canonical physical coordinate c=T*alpha.
+
+The ``--conditioning inverse_sine`` control is intentionally paired only with
+``--schedule canonical_alpha``. It keeps the same uniform physical-alpha
+training measure as CanonicalAlpha while feeding the network the coordinate of
+DB-CR's original sine parameterization:
+    c = T * (2/pi) * asin(alpha).
+This isolates conditioning-coordinate semantics from training-measure effects.
 """
 
 from __future__ import annotations
@@ -41,6 +48,7 @@ from mscloudr.models import (
 from mscloudr.reproducibility import make_torch_generator, seed_everything
 from mscloudr.runner import fit
 from mscloudr.training import (
+    INVERSE_SINE_CONDITIONING,
     PHYSICAL_ALPHA_CONDITIONING,
     RAW_T_CONDITIONING,
     SUPPORTED_CONDITIONING_MODES,
@@ -73,8 +81,9 @@ def build_parser():
         default=RAW_T_CONDITIONING,
         help=(
             "Coordinate passed to the legacy time embedding. raw_t reproduces "
-            "historical DB-CR. physical_alpha passes c=T*alpha while leaving "
-            "the selected schedule's bridge-state sampling measure unchanged."
+            "historical DB-CR; physical_alpha passes c=T*alpha; inverse_sine "
+            "passes c=T*(2/pi)*asin(alpha) and is restricted to "
+            "--schedule canonical_alpha for the matched-measure control."
         ),
     )
     return parser
@@ -106,6 +115,19 @@ def _resolve_pilot_schedule(name: str):
     return base.canonical_schedule(name)
 
 
+def _validate_conditioning_schedule_pair(schedule_name: str, mode: str) -> None:
+    """Prevent accidental changes to the intended matched-measure control."""
+
+    if (
+        mode == INVERSE_SINE_CONDITIONING
+        and schedule_name != "canonical_alpha"
+    ):
+        raise ValueError(
+            "inverse_sine conditioning is a matched-measure control and "
+            "requires --schedule canonical_alpha"
+        )
+
+
 def _conditioning_metadata(mode: str) -> dict:
     if mode == RAW_T_CONDITIONING:
         return {
@@ -123,6 +145,16 @@ def _conditioning_metadata(mode: str) -> dict:
             "conditioning_definition": "c=T*alpha",
             "coordinate_invariant_conditioning": True,
         }
+    if mode == INVERSE_SINE_CONDITIONING:
+        return {
+            "conditioning_mode": INVERSE_SINE_CONDITIONING,
+            "conditioning_identity": "inverse_sine_t_from_physical_alpha",
+            "conditioning_coordinate": "original_sine_inverse_coordinate",
+            "conditioning_definition": "c=T*(2/pi)*asin(alpha)",
+            "coordinate_invariant_conditioning": False,
+            "matched_measure_control": True,
+            "conditioning_reference_schedule": "original",
+        }
     raise ValueError(f"unsupported conditioning mode: {mode!r}")
 
 
@@ -131,6 +163,7 @@ def run(args):
     run_dir = base._prepare_output_dir(args)
     device = base.resolve_device(args.device)
     schedule_name, schedule, mr_rate = _resolve_pilot_schedule(args.schedule)
+    _validate_conditioning_schedule_pair(schedule_name, args.conditioning)
 
     seed_everything(
         args.train_seed,
