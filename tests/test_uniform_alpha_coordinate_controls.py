@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from mscloudr.cli.fixed_alpha_sweep import conditioning_for_alpha
 from mscloudr.cli.pilot_train import (
     _conditioning_metadata,
     _validate_conditioning_schedule_pair,
@@ -118,3 +119,17 @@ def test_inverse_sine_metadata_records_matched_measure_control():
     assert metadata["matched_measure_control"] is True
     assert metadata["conditioning_reference_schedule"] == "original"
     assert metadata["coordinate_invariant_conditioning"] is False
+
+
+def test_fixed_alpha_sweep_uses_inverse_sine_coordinate():
+    result = conditioning_for_alpha(
+        0.5,
+        schedule_name="canonical_alpha",
+        total_steps=1000,
+        conditioning_mode=INVERSE_SINE_CONDITIONING,
+    )
+
+    assert result["model_conditioning_mode"] == INVERSE_SINE_CONDITIONING
+    assert abs(float(result["model_conditioning_value"]) - 1000.0 / 3.0) < 1e-9
+    assert result["conditioning_alpha"] == 0.5
+    assert result["conditioning_alpha_error"] == 0.0
