@@ -6,8 +6,8 @@ must use.
 
 Random-t training and random-t validation require an explicit sampler
 torch.Generator. Endpoint validation is deterministic and schedule independent:
-x_T is exactly the cloudy optical observation and the endpoint conditioning
-coordinate is T for both raw-t and physical-alpha conditioning.
+x_T is exactly the cloudy optical observation and every supported conditioning
+coordinate equals T at alpha=1.
 
 The canonical checkpoint-selection metric for NFE=1 experiments is
 val_endpoint_l1. Random-t validation is diagnostic only.
@@ -15,6 +15,7 @@ val_endpoint_l1. Random-t validation is diagnostic only.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -33,9 +34,11 @@ DIAGNOSTIC_RANDOM_T_METRIC = "val_random_t_l1"
 
 RAW_T_CONDITIONING = "raw_t"
 PHYSICAL_ALPHA_CONDITIONING = "physical_alpha"
+INVERSE_SINE_CONDITIONING = "inverse_sine"
 SUPPORTED_CONDITIONING_MODES = (
     RAW_T_CONDITIONING,
     PHYSICAL_ALPHA_CONDITIONING,
+    INVERSE_SINE_CONDITIONING,
 )
 
 
@@ -133,8 +136,13 @@ def model_conditioning_coordinate(
     ``physical_alpha`` removes schedule-dependent coordinate semantics: the
     model sees c = T * alpha, where alpha is the actual physical interpolation
     coefficient used to construct x_alpha. Scaling by T preserves the legacy
-    numerical conditioning range [0, T] while making equal physical bridge
-    states receive equal conditioning values under every schedule.
+    numerical conditioning range [0, T].
+
+    ``inverse_sine`` maps physical alpha back to the normalized coordinate of
+    DB-CR's original sine schedule while leaving bridge-state sampling itself
+    unchanged: c = T * (2/pi) * asin(alpha). With canonical_alpha sampling this
+    yields a uniform physical-alpha training measure but original-sine
+    conditioning semantics.
     """
 
     total_steps = int(total_steps)
@@ -150,10 +158,20 @@ def model_conditioning_coordinate(
     if mode == RAW_T_CONDITIONING:
         return timesteps
 
-    return alpha.to(
+    alpha_float = alpha.to(
         device=timesteps.device,
         dtype=torch.float32,
-    ) * float(total_steps)
+    )
+
+    if mode == PHYSICAL_ALPHA_CONDITIONING:
+        return alpha_float * float(total_steps)
+
+    alpha_clamped = torch.clamp(alpha_float, 0.0, 1.0)
+    return (
+        (2.0 / math.pi)
+        * torch.asin(alpha_clamped)
+        * float(total_steps)
+    )
 
 
 def random_t_bridge_step(
@@ -278,8 +296,8 @@ def endpoint_validation_step(
     """Schedule-invariant endpoint validation for NFE=1 checkpoint selection.
 
     Since every admissible bridge schedule satisfies alpha(T)=1, the endpoint
-    model input is constructed directly as x_T = cloudy. Both supported
-    conditioning modes equal T at alpha=1, so endpoint inference remains
+    model input is constructed directly as x_T = cloudy. Every supported
+    conditioning mode equals T at alpha=1, so endpoint inference remains
     identical in coordinate value.
     """
 
