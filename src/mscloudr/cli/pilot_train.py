@@ -11,6 +11,16 @@ training measure over the physical corruption grid {0,1/T,...,1}.
 The ``--conditioning physical_alpha`` option keeps a schedule's bridge-state
 sampling measure unchanged but replaces schedule-dependent raw-t conditioning
 with the canonical physical coordinate c=T*alpha.
+
+The ``--difficulty-mix`` control changes only the physical-alpha training
+measure. It mixes uniform alpha coverage with a normalized piecewise-linear
+fixed-alpha training L1 difficulty profile:
+
+    q_eta(alpha) = (1-eta) U(0,1) + eta E_tilde_train(alpha).
+
+Sampling uses the inverse CDF of that continuous density applied to the
+existing uniform discrete timestep variable. The intended first pilot uses
+eta=0.5. Endpoint checkpoint selection remains val_endpoint_l1.
 """
 
 from __future__ import annotations
@@ -32,6 +42,11 @@ from mscloudr.data.pilot import (
     build_pilot_datasets,
     pilot_split_audit,
     save_pilot_manifest,
+)
+from mscloudr.difficulty_measure import (
+    DEFAULT_DIFFICULTY_MIX,
+    difficulty_measure_summary,
+    difficulty_mixture_schedule,
 )
 from mscloudr.models import (
     LEGACY_DBCR_PARAMETER_COUNT,
@@ -75,6 +90,17 @@ def build_parser():
             "Coordinate passed to the legacy time embedding. raw_t reproduces "
             "historical DB-CR. physical_alpha passes c=T*alpha while leaving "
             "the selected schedule's bridge-state sampling measure unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--difficulty-mix",
+        type=float,
+        default=0.0,
+        help=(
+            "Difficulty-adaptive measure mixture eta. eta=0 preserves the normal "
+            "selected schedule. eta>0 requires --schedule canonical_alpha and "
+            "--conditioning physical_alpha. The first intended pilot uses "
+            f"eta={DEFAULT_DIFFICULTY_MIX}."
         ),
     )
     return parser
@@ -126,11 +152,39 @@ def _conditioning_metadata(mode: str) -> dict:
     raise ValueError(f"unsupported conditioning mode: {mode!r}")
 
 
+def _validate_difficulty_measure_args(
+    schedule_name: str,
+    conditioning_mode: str,
+    difficulty_mix: float,
+) -> float:
+    eta = float(difficulty_mix)
+    if not 0.0 <= eta <= 1.0:
+        raise ValueError("difficulty-mix must satisfy 0 <= eta <= 1")
+    if eta > 0.0:
+        if schedule_name != "canonical_alpha":
+            raise ValueError(
+                "difficulty-mix > 0 requires --schedule canonical_alpha"
+            )
+        if conditioning_mode != PHYSICAL_ALPHA_CONDITIONING:
+            raise ValueError(
+                "difficulty-mix > 0 requires --conditioning physical_alpha"
+            )
+    return eta
+
+
 def run(args):
     base.validate_cli_args(args)
     run_dir = base._prepare_output_dir(args)
     device = base.resolve_device(args.device)
     schedule_name, schedule, mr_rate = _resolve_pilot_schedule(args.schedule)
+    difficulty_mix = _validate_difficulty_measure_args(
+        schedule_name,
+        args.conditioning,
+        args.difficulty_mix,
+    )
+    difficulty_measure_active = difficulty_mix > 0.0
+    if difficulty_measure_active:
+        schedule = difficulty_mixture_schedule(difficulty_mix)
 
     seed_everything(
         args.train_seed,
@@ -224,6 +278,23 @@ def run(args):
             }
         )
 
+    if difficulty_measure_active:
+        metadata.update(
+            {
+                "bridge_coordinate": "physical_alpha",
+                "bridge_parameterization": (
+                    "u=t/T; alpha=F_diff_eta^{-1}(u) for the continuous "
+                    "training-difficulty mixture density"
+                ),
+                "canonical_alpha_direct": False,
+                "difficulty_measure_active": True,
+            }
+        )
+        metadata.update(difficulty_measure_summary(difficulty_mix))
+    else:
+        metadata["difficulty_measure_active"] = False
+        metadata["difficulty_mix_eta"] = difficulty_mix
+
     config_path = run_dir / "run_config.json"
     if args.resume is None:
         base._write_json_atomic(config_path, metadata)
@@ -255,6 +326,12 @@ def run(args):
                 "bridge_coordinate": metadata["bridge_coordinate"],
                 "training_bridge_measure": metadata[
                     "training_bridge_measure"
+                ],
+                "difficulty_measure_active": metadata[
+                    "difficulty_measure_active"
+                ],
+                "difficulty_mix_eta": metadata[
+                    "difficulty_mix_eta"
                 ],
                 "data_profile": metadata["data_profile"],
                 "pilot_fraction": PILOT_FRACTION,
