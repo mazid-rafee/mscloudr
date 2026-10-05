@@ -164,11 +164,14 @@ def random_t_bridge_step(
     total_steps: int,
     sampler_generator: torch.Generator,
     conditioning_mode: str = RAW_T_CONDITIONING,
+    curvature_kappa: float = 0.0,
 ) -> BridgeStepResult:
     """Compute one random-t direct-x0-prediction L1 batch.
 
     This function is used for both training and diagnostic random-t validation.
-    The caller decides whether gradients are enabled.
+    The caller decides whether gradients are enabled. ``curvature_kappa`` only
+    changes the physical bridge geometry; timestep sampling and conditioning
+    remain controlled separately.
     """
 
     cloudy, sar, target = _require_batch(
@@ -189,6 +192,7 @@ def random_t_bridge_step(
         target,
         cloudy,
         alpha,
+        curvature_kappa=curvature_kappa,
     )
     conditioning = model_conditioning_coordinate(
         timesteps,
@@ -233,6 +237,7 @@ def training_step(
     total_steps: int,
     sampler_generator: torch.Generator,
     conditioning_mode: str = RAW_T_CONDITIONING,
+    curvature_kappa: float = 0.0,
 ) -> BridgeStepResult:
     """Training computation before optimizer zero_grad/backward/step."""
 
@@ -243,6 +248,7 @@ def training_step(
         total_steps=total_steps,
         sampler_generator=sampler_generator,
         conditioning_mode=conditioning_mode,
+        curvature_kappa=curvature_kappa,
     )
 
 
@@ -254,6 +260,7 @@ def random_t_validation_step(
     total_steps: int,
     sampler_generator: torch.Generator,
     conditioning_mode: str = RAW_T_CONDITIONING,
+    curvature_kappa: float = 0.0,
 ) -> BridgeStepResult:
     """Diagnostic validation under the schedule-dependent random-t measure."""
 
@@ -265,6 +272,7 @@ def random_t_validation_step(
             total_steps=total_steps,
             sampler_generator=sampler_generator,
             conditioning_mode=conditioning_mode,
+            curvature_kappa=curvature_kappa,
         )
 
 
@@ -275,12 +283,12 @@ def endpoint_validation_step(
     total_steps: int,
     conditioning_mode: str = RAW_T_CONDITIONING,
 ) -> BridgeStepResult:
-    """Schedule-invariant endpoint validation for NFE=1 checkpoint selection.
+    """Schedule- and curvature-invariant endpoint validation for NFE=1.
 
-    Since every admissible bridge schedule satisfies alpha(T)=1, the endpoint
-    model input is constructed directly as x_T = cloudy. Both supported
-    conditioning modes equal T at alpha=1, so endpoint inference remains
-    identical in coordinate value.
+    Since every admissible bridge geometry used here satisfies x(alpha=1)=y,
+    the endpoint model input is constructed directly as x_T = cloudy. Both
+    supported conditioning modes equal T at alpha=1, so endpoint inference
+    remains identical in coordinate value.
     """
 
     total_steps = int(
