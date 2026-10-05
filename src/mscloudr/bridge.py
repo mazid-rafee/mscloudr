@@ -3,9 +3,21 @@
 The module keeps bridge geometry separate from the neural network so schedules
 can be compared without changing the backbone.
 
-For cloudy optical y, clean target x0, and bridge weight alpha:
+For cloudy optical y, clean target x0, and bridge weight alpha, the historical
+straight bridge is
+
+    x_t = (1 - alpha_t) * x0 + alpha_t * y.
+
+The controlled curved geometry used by the geometry ablation is
 
     x_t = (1 - alpha_t) * x0 + alpha_t * y
+          + kappa * 4 * alpha_t * (1 - alpha_t) * phi,
+
+where phi is a deterministic quarter-turn of the clean-to-cloudy residual.
+The construction satisfies <phi, y-x0> = 0 and ||phi|| = ||y-x0|| for every
+sample when the flattened sample dimension is even (as it is for SEN12MS-CR
+13x256x256 optical patches).  Consequently kappa controls only the magnitude
+and sign of the off-line curvature while preserving both endpoints.
 
 The deterministic DB-CR reverse update from t to s is:
 
@@ -223,12 +235,59 @@ def _as_batch_coefficient(
     )
 
 
+def orthogonal_residual_direction(
+    clean: torch.Tensor,
+    cloudy: torch.Tensor,
+) -> torch.Tensor:
+    """Return a deterministic direction orthogonal to the corruption residual.
+
+    For each sample, flatten d = cloudy - clean and apply the fixed pairwise
+    90-degree rotation (a,b) -> (-b,a).  This linear map is norm preserving and
+    skew-symmetric, hence d dot phi = 0 and ||phi|| = ||d|| exactly up to
+    floating-point arithmetic.  The construction intentionally contains no
+    learned parameters, SAR information, or schedule information.
+    """
+
+    if clean.shape != cloudy.shape:
+        raise ValueError(
+            "clean and cloudy tensors must have identical shapes"
+        )
+    if clean.ndim != 4:
+        raise ValueError(
+            "clean and cloudy must have shape [B,C,H,W]"
+        )
+
+    residual = cloudy - clean
+    flat = residual.reshape(residual.shape[0], -1)
+    if flat.shape[1] % 2 != 0:
+        raise ValueError(
+            "controlled orthogonal curvature requires an even flattened "
+            "sample dimension"
+        )
+
+    pairs = flat.reshape(flat.shape[0], -1, 2)
+    rotated = torch.stack(
+        (-pairs[..., 1], pairs[..., 0]),
+        dim=-1,
+    )
+    return rotated.reshape_as(residual)
+
+
 def make_bridge_state(
     clean: torch.Tensor,
     cloudy: torch.Tensor,
     alpha,
+    *,
+    curvature_kappa: float = 0.0,
 ) -> torch.Tensor:
-    """Construct x_t on the straight cloudy-to-clean bridge."""
+    """Construct a straight or controlled-curved cloudy-to-clean bridge state.
+
+    ``curvature_kappa=0`` is exactly the historical straight bridge.  For
+    non-zero kappa, the perturbation envelope 4*alpha*(1-alpha) vanishes at
+    both endpoints and peaks at one in the physical midpoint alpha=0.5.  Since
+    phi has the same norm as the clean-to-cloudy residual, |kappa| is the
+    midpoint perturbation-to-residual norm ratio.
+    """
 
     if clean.shape != cloudy.shape:
         raise ValueError(
@@ -243,10 +302,25 @@ def make_bridge_state(
         alpha,
         reference=clean,
     )
-    return (
+    straight = (
         (1.0 - alpha) * clean
         + alpha * cloudy
     )
+
+    kappa = float(curvature_kappa)
+    if not math.isfinite(kappa):
+        raise ValueError(
+            "curvature_kappa must be finite"
+        )
+    if kappa == 0.0:
+        return straight
+
+    phi = orthogonal_residual_direction(
+        clean,
+        cloudy,
+    )
+    envelope = 4.0 * alpha * (1.0 - alpha)
+    return straight + (kappa * envelope) * phi
 
 
 def sample_timesteps(
