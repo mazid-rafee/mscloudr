@@ -152,6 +152,7 @@ def run_training_epoch(
     sampler_generator: torch.Generator,
     device: torch.device,
     conditioning_mode: str = RAW_T_CONDITIONING,
+    curvature_kappa: float = 0.0,
     max_batches: int | None = None,
     epoch: int = 1,
     progress_every: int | None = None,
@@ -184,6 +185,7 @@ def run_training_epoch(
             total_steps=total_steps,
             sampler_generator=sampler_generator,
             conditioning_mode=conditioning_mode,
+            curvature_kappa=curvature_kappa,
         )
 
         optimizer.zero_grad(
@@ -230,6 +232,7 @@ def run_validation_epoch(
     sampler_generator: torch.Generator,
     device: torch.device,
     conditioning_mode: str = RAW_T_CONDITIONING,
+    curvature_kappa: float = 0.0,
     max_batches: int | None = None,
     epoch: int = 1,
     progress_every: int | None = None,
@@ -263,6 +266,7 @@ def run_validation_epoch(
             total_steps=total_steps,
             sampler_generator=sampler_generator,
             conditioning_mode=conditioning_mode,
+            curvature_kappa=curvature_kappa,
         )
         endpoint_result = endpoint_validation_step(
             model,
@@ -405,6 +409,7 @@ def fit(
     device: str | torch.device,
     model_identity: str = "legacy_dbcr",
     conditioning_mode: str = RAW_T_CONDITIONING,
+    curvature_kappa: float = 0.0,
     lr: float = HISTORICAL_LEARNING_RATE,
     optimizer: Optimizer | None = None,
     run_metadata: Mapping[str, Any] | None = None,
@@ -419,6 +424,7 @@ def fit(
 
     epochs = int(epochs)
     total_steps = int(total_steps)
+    curvature_kappa = float(curvature_kappa)
     if epochs <= 0:
         raise ValueError(
             "epochs must be positive"
@@ -514,6 +520,7 @@ def fit(
             sampler_generator=sampler_generator,
             device=device,
             conditioning_mode=conditioning_mode,
+            curvature_kappa=curvature_kappa,
             max_batches=max_train_batches,
             epoch=epoch,
             progress_every=progress_every,
@@ -528,6 +535,7 @@ def fit(
             sampler_generator=sampler_generator,
             device=device,
             conditioning_mode=conditioning_mode,
+            curvature_kappa=curvature_kappa,
             max_batches=max_val_batches,
             epoch=epoch,
             progress_every=progress_every,
