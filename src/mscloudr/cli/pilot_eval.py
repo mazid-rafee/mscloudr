@@ -45,6 +45,12 @@ def _conditioning_mode(metadata: dict[str, Any]) -> str:
     return str(mode)
 
 
+def _geometry_metadata(metadata: dict[str, Any]) -> tuple[str, float]:
+    geometry = str(metadata.get("bridge_geometry", "straight_linear"))
+    kappa = float(metadata.get("geometry_kappa", 0.0))
+    return geometry, kappa
+
+
 def _validate_pilot_checkpoint(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("format_version") != CHECKPOINT_FORMAT_VERSION:
         raise ValueError("unsupported checkpoint format version")
@@ -71,6 +77,7 @@ def _validate_pilot_checkpoint(payload: dict[str, Any]) -> dict[str, Any]:
             "unsupported controlled schedule identity in checkpoint metadata"
         )
     _conditioning_mode(metadata)
+    _geometry_metadata(metadata)
     if int(metadata.get("total_steps", 0)) <= 0:
         raise ValueError("checkpoint metadata has invalid total_steps")
     return metadata
@@ -91,6 +98,7 @@ def run(args) -> dict[str, Any]:
     payload = base._torch_load_payload(checkpoint_path)
     metadata = _validate_pilot_checkpoint(payload)
     conditioning_mode = _conditioning_mode(metadata)
+    bridge_geometry, geometry_kappa = _geometry_metadata(metadata)
 
     device = base.resolve_device(args.device)
     train_seed = base._train_seed_from_metadata(metadata)
@@ -152,6 +160,8 @@ def run(args) -> dict[str, Any]:
                 "model_identity": "legacy_dbcr",
                 "schedule_name": metadata["schedule_name"],
                 "conditioning_mode": conditioning_mode,
+                "bridge_geometry": bridge_geometry,
+                "geometry_kappa": geometry_kappa,
                 "split": "test",
                 "data_profile": metadata.get("data_profile"),
                 "test_samples": len(datasets.test),
@@ -166,8 +176,9 @@ def run(args) -> dict[str, Any]:
         flush=True,
     )
 
-    # At alpha=1, raw-t and physical-alpha conditioning both equal T. The
-    # canonical endpoint evaluator therefore remains exactly valid for both.
+    # At alpha=1, raw-t and physical-alpha conditioning both equal T, and the
+    # controlled curvature envelope is exactly zero. The canonical endpoint
+    # evaluator therefore remains exactly valid for straight and curved runs.
     result: EvaluationResult = evaluate_nfe1_endpoint(
         model,
         loaders.test,
@@ -197,11 +208,15 @@ def run(args) -> dict[str, Any]:
         "schedule_name": metadata["schedule_name"],
         "conditioning_mode": conditioning_mode,
         "conditioning_identity": metadata.get("conditioning_identity"),
+        "bridge_geometry": bridge_geometry,
+        "geometry_kappa": geometry_kappa,
+        "geometry_definition": metadata.get("geometry_definition"),
         "total_steps": int(metadata["total_steps"]),
         "nfe": 1,
         "inference": "endpoint_direct_x0",
         "endpoint_conditioning_value": int(metadata["total_steps"]),
         "schedule_used_during_inference": False,
+        "curved_geometry_used_during_inference": False,
         "split": "test",
         "split_protocol": PILOT_PROTOCOL,
         "split_audit": split_audit,
