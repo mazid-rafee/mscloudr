@@ -11,6 +11,16 @@ training measure over the physical corruption grid {0,1/T,...,1}.
 The ``--conditioning physical_alpha`` option keeps a schedule's bridge-state
 sampling measure unchanged but replaces schedule-dependent raw-t conditioning
 with the canonical physical coordinate c=T*alpha.
+
+The ``--generalization-mix`` control changes only the physical-alpha training
+measure. It mixes uniform alpha coverage with a normalized piecewise-linear
+held-out validation-minus-training L1 gap profile:
+
+    q_eta(alpha) = (1-eta) U(0,1) + eta D_tilde_gen(alpha).
+
+Sampling uses the inverse CDF of that continuous density applied to the
+existing uniform discrete timestep variable. The intended first pilot uses
+eta=0.5. Endpoint checkpoint selection remains val_endpoint_l1.
 """
 
 from __future__ import annotations
@@ -32,6 +42,11 @@ from mscloudr.data.pilot import (
     build_pilot_datasets,
     pilot_split_audit,
     save_pilot_manifest,
+)
+from mscloudr.generalization_measure import (
+    DEFAULT_GENERALIZATION_MIX,
+    generalization_measure_summary,
+    generalization_mixture_schedule,
 )
 from mscloudr.models import (
     LEGACY_DBCR_PARAMETER_COUNT,
@@ -75,6 +90,17 @@ def build_parser():
             "Coordinate passed to the legacy time embedding. raw_t reproduces "
             "historical DB-CR. physical_alpha passes c=T*alpha while leaving "
             "the selected schedule's bridge-state sampling measure unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--generalization-mix",
+        type=float,
+        default=0.0,
+        help=(
+            "Generalization-gap measure mixture eta. eta=0 preserves the normal "
+            "selected schedule. eta>0 requires --schedule canonical_alpha and "
+            "--conditioning physical_alpha. The first intended pilot uses "
+            f"eta={DEFAULT_GENERALIZATION_MIX}."
         ),
     )
     return parser
@@ -126,11 +152,39 @@ def _conditioning_metadata(mode: str) -> dict:
     raise ValueError(f"unsupported conditioning mode: {mode!r}")
 
 
+def _validate_generalization_measure_args(
+    schedule_name: str,
+    conditioning_mode: str,
+    generalization_mix: float,
+) -> float:
+    eta = float(generalization_mix)
+    if not 0.0 <= eta <= 1.0:
+        raise ValueError("generalization-mix must satisfy 0 <= eta <= 1")
+    if eta > 0.0:
+        if schedule_name != "canonical_alpha":
+            raise ValueError(
+                "generalization-mix > 0 requires --schedule canonical_alpha"
+            )
+        if conditioning_mode != PHYSICAL_ALPHA_CONDITIONING:
+            raise ValueError(
+                "generalization-mix > 0 requires --conditioning physical_alpha"
+            )
+    return eta
+
+
 def run(args):
     base.validate_cli_args(args)
     run_dir = base._prepare_output_dir(args)
     device = base.resolve_device(args.device)
     schedule_name, schedule, mr_rate = _resolve_pilot_schedule(args.schedule)
+    generalization_mix = _validate_generalization_measure_args(
+        schedule_name,
+        args.conditioning,
+        args.generalization_mix,
+    )
+    generalization_measure_active = generalization_mix > 0.0
+    if generalization_measure_active:
+        schedule = generalization_mixture_schedule(generalization_mix)
 
     seed_everything(
         args.train_seed,
@@ -224,6 +278,23 @@ def run(args):
             }
         )
 
+    if generalization_measure_active:
+        metadata.update(
+            {
+                "bridge_coordinate": "physical_alpha",
+                "bridge_parameterization": (
+                    "u=t/T; alpha=F_gen_eta^{-1}(u) for the continuous "
+                    "generalization-gap mixture density"
+                ),
+                "canonical_alpha_direct": False,
+                "generalization_measure_active": True,
+            }
+        )
+        metadata.update(generalization_measure_summary(generalization_mix))
+    else:
+        metadata["generalization_measure_active"] = False
+        metadata["generalization_mix_eta"] = generalization_mix
+
     config_path = run_dir / "run_config.json"
     if args.resume is None:
         base._write_json_atomic(config_path, metadata)
@@ -255,6 +326,12 @@ def run(args):
                 "bridge_coordinate": metadata["bridge_coordinate"],
                 "training_bridge_measure": metadata[
                     "training_bridge_measure"
+                ],
+                "generalization_measure_active": metadata[
+                    "generalization_measure_active"
+                ],
+                "generalization_mix_eta": metadata[
+                    "generalization_mix_eta"
                 ],
                 "data_profile": metadata["data_profile"],
                 "pilot_fraction": PILOT_FRACTION,
