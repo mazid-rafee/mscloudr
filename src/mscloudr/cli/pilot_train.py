@@ -11,11 +11,17 @@ training measure over the physical corruption grid {0,1/T,...,1}.
 The ``--conditioning physical_alpha`` option keeps a schedule's bridge-state
 sampling measure unchanged but replaces schedule-dependent raw-t conditioning
 with the canonical physical coordinate c=T*alpha.
+
+The ``--geometry-kappa`` option is a controlled nonlinear-geometry ablation.
+For non-zero kappa it is intentionally restricted to canonical-alpha sampling
+plus physical-alpha conditioning so geometry changes while q(alpha) and
+c(alpha) remain fixed.
 """
 
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 from mscloudr.bridge import get_bridge_schedule
@@ -77,6 +83,18 @@ def build_parser():
             "the selected schedule's bridge-state sampling measure unchanged."
         ),
     )
+    parser.add_argument(
+        "--geometry-kappa",
+        type=float,
+        default=0.0,
+        help=(
+            "Controlled off-line bridge curvature. kappa=0 is the exact "
+            "straight bridge. Non-zero values require --schedule "
+            "canonical_alpha and --conditioning physical_alpha. The midpoint "
+            "curvature perturbation has norm |kappa| times the clean-cloudy "
+            "residual norm."
+        ),
+    )
     return parser
 
 
@@ -126,8 +144,45 @@ def _conditioning_metadata(mode: str) -> dict:
     raise ValueError(f"unsupported conditioning mode: {mode!r}")
 
 
+def _geometry_metadata(kappa: float) -> dict:
+    kappa = float(kappa)
+    return {
+        "bridge_geometry": (
+            "straight_linear"
+            if kappa == 0.0
+            else "orthogonal_residual_curved"
+        ),
+        "geometry_kappa": kappa,
+        "geometry_envelope": "4*alpha*(1-alpha)",
+        "geometry_direction": "fixed_pairwise_90deg_rotation_of_cloud_residual",
+        "geometry_definition": (
+            "x_alpha=(1-alpha)*x0+alpha*y+"
+            "kappa*4*alpha*(1-alpha)*phi; "
+            "phi=J(y-x0), <phi,y-x0>=0, ||phi||=||y-x0||"
+        ),
+        "geometry_endpoint_preserving": True,
+        "geometry_midpoint_perturbation_ratio": abs(kappa),
+    }
+
+
+def _validate_geometry_args(args) -> None:
+    kappa = float(args.geometry_kappa)
+    if not math.isfinite(kappa):
+        raise ValueError("geometry-kappa must be finite")
+    if kappa != 0.0 and (
+        args.schedule != "canonical_alpha"
+        or args.conditioning != PHYSICAL_ALPHA_CONDITIONING
+    ):
+        raise ValueError(
+            "non-zero --geometry-kappa is a controlled geometry experiment "
+            "and requires --schedule canonical_alpha --conditioning "
+            "physical_alpha"
+        )
+
+
 def run(args):
     base.validate_cli_args(args)
+    _validate_geometry_args(args)
     run_dir = base._prepare_output_dir(args)
     device = base.resolve_device(args.device)
     schedule_name, schedule, mr_rate = _resolve_pilot_schedule(args.schedule)
@@ -198,6 +253,7 @@ def run(args):
         }
     )
     metadata.update(_conditioning_metadata(args.conditioning))
+    metadata.update(_geometry_metadata(args.geometry_kappa))
 
     if schedule_name == "canonical_alpha":
         metadata.update(
@@ -234,6 +290,12 @@ def run(args):
             )
         previous_metadata = json.loads(config_path.read_text(encoding="utf-8"))
         base.validate_resume_metadata(previous_metadata, metadata)
+        if float(previous_metadata.get("geometry_kappa", 0.0)) != float(
+            metadata["geometry_kappa"]
+        ):
+            raise ValueError("resume configuration mismatch for: geometry_kappa")
+        if previous_metadata.get("bridge_geometry") != metadata["bridge_geometry"]:
+            raise ValueError("resume configuration mismatch for: bridge_geometry")
         base._write_json_atomic(config_path, metadata)
 
     _write_or_validate_manifest(
@@ -255,6 +317,11 @@ def run(args):
                 "bridge_coordinate": metadata["bridge_coordinate"],
                 "training_bridge_measure": metadata[
                     "training_bridge_measure"
+                ],
+                "bridge_geometry": metadata["bridge_geometry"],
+                "geometry_kappa": metadata["geometry_kappa"],
+                "geometry_midpoint_perturbation_ratio": metadata[
+                    "geometry_midpoint_perturbation_ratio"
                 ],
                 "data_profile": metadata["data_profile"],
                 "pilot_fraction": PILOT_FRACTION,
@@ -298,6 +365,7 @@ def run(args):
         device=device,
         model_identity="legacy_dbcr",
         conditioning_mode=args.conditioning,
+        curvature_kappa=args.geometry_kappa,
         lr=args.lr,
         run_metadata=metadata,
         resume_from=args.resume,
