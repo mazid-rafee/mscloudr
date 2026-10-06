@@ -7,6 +7,15 @@ from .blocks import (
     SimpleGate,
     count_trainable_parameters,
 )
+from .canonical_bridge import (
+    CANONICAL_BRIDGE_MODEL_IDENTITY,
+    AlphaFiLM,
+    CanonicalBridgeNet,
+    GatedSARFusion,
+    PhysicalAlphaEmbedding,
+    ResidualConvBlock,
+    count_canonical_bridge_parameters,
+)
 from .dbcr import (
     AuditedDBCRNet,
     DBCRArchitectureConfig,
@@ -32,9 +41,13 @@ from .patent_blocks import (
 )
 
 __all__ = [
+    "AlphaFiLM",
     "AuditedDBCRNet",
+    "CANONICAL_BRIDGE_MODEL_IDENTITY",
+    "CanonicalBridgeNet",
     "DBCRArchitectureConfig",
     "DBCRNet",
+    "GatedSARFusion",
     "HISTORICAL_MSCLOUDR_PARAMETER_COUNT",
     "LEGACY_DBCR_PARAMETER_COUNT",
     "LayerNorm2d",
@@ -48,9 +61,12 @@ __all__ = [
     "PatentTimeEmbeddedNAFBlock",
     "PatentTimeEmbedding",
     "PatentTimeEmbeddingConfig",
+    "PhysicalAlphaEmbedding",
+    "ResidualConvBlock",
     "SFBlock",
     "SimpleGate",
     "SinusoidalTimeEmbedding",
+    "count_canonical_bridge_parameters",
     "count_legacy_parameters",
     "count_trainable_parameters",
     "sine_bridge_alpha",
