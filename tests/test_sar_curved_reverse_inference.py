@@ -2,7 +2,11 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
-from mscloudr.bridge import make_sar_curved_bridge_state
+from mscloudr.bridge import (
+    deterministic_reverse_step,
+    deterministic_sar_curved_reverse_step,
+    make_sar_curved_bridge_state,
+)
 from mscloudr.evaluation import (
     evaluate_nfe1_endpoint,
     evaluate_sar_curved_reverse,
@@ -104,3 +108,58 @@ def test_curved_reverse_nfe2_uses_nonzero_intermediate_curvature():
     )
 
     assert abs(nfe1.metrics["L1"] - nfe2.metrics["L1"]) > 1e-4
+
+
+def test_curved_reverse_reduces_to_straight_reverse_when_curvature_is_zero():
+    x_t = torch.rand(2, 13, 4, 4)
+    x0_hat = torch.rand_like(x_t)
+    zero_curvature = torch.zeros_like(x_t)
+    alpha_t = torch.tensor([1.0, 0.7])
+    alpha_s = torch.tensor([0.5, 0.2])
+
+    straight = deterministic_reverse_step(
+        x_t,
+        x0_hat,
+        alpha_t=alpha_t,
+        alpha_s=alpha_s,
+    )
+    curved = deterministic_sar_curved_reverse_step(
+        x_t,
+        x0_hat,
+        zero_curvature,
+        alpha_t=alpha_t,
+        alpha_s=alpha_s,
+    )
+
+    assert torch.allclose(curved, straight, atol=1e-7, rtol=0.0)
+
+
+def test_curved_reverse_tracks_exact_curve_with_perfect_x0_prediction():
+    x0 = torch.rand(2, 13, 4, 4)
+    cloudy = torch.rand_like(x0)
+    curvature = torch.rand_like(x0) * 0.03
+    alpha_t = torch.tensor([0.8, 0.6])
+    alpha_s = torch.tensor([0.4, 0.2])
+
+    x_t = make_sar_curved_bridge_state(
+        x0,
+        cloudy,
+        curvature,
+        alpha_t,
+    )
+    expected_x_s = make_sar_curved_bridge_state(
+        x0,
+        cloudy,
+        curvature,
+        alpha_s,
+    )
+
+    x_s = deterministic_sar_curved_reverse_step(
+        x_t,
+        x0,
+        curvature,
+        alpha_t=alpha_t,
+        alpha_s=alpha_s,
+    )
+
+    assert torch.allclose(x_s, expected_x_s, atol=1e-6, rtol=0.0)
