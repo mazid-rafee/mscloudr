@@ -18,7 +18,12 @@ from mscloudr.data.pilot import (
     build_pilot_datasets,
     pilot_split_audit,
 )
-from mscloudr.evaluation import EvaluationResult, evaluate_nfe1_endpoint
+from mscloudr.bridge import make_reverse_timesteps
+from mscloudr.evaluation import (
+    EvaluationResult,
+    evaluate_nfe1_endpoint,
+    evaluate_sar_curved_reverse,
+)
 from mscloudr.metrics import REFERENCE_COMMIT, REFERENCE_REPO
 from mscloudr.models import (
     CANONICAL_BRIDGE_MODEL_IDENTITY,
@@ -37,6 +42,16 @@ def build_parser():
     parser.description = (
         "Evaluate a CanonicalBridgeNet checkpoint on the fixed 10% "
         "ROI-disjoint SEN12MS-CR pilot test subset."
+    )
+    parser.add_argument(
+        "--nfe",
+        type=int,
+        default=1,
+        help=(
+            "Number of model evaluations. NFE=1 is direct endpoint prediction. "
+            "For dual-role SAR bridge checkpoints, NFE>=2 follows the learned "
+            "SAR-curved bridge consistently during reverse inference."
+        ),
     )
     return parser
 
@@ -78,16 +93,23 @@ def _validate_checkpoint(payload: dict[str, Any]) -> dict[str, Any]:
     return metadata
 
 
-def _default_output_path(checkpoint_path: Path) -> Path:
+def _default_output_path(checkpoint_path: Path, nfe: int) -> Path:
+    suffix = (
+        "pilot_eval_metrics.json"
+        if int(nfe) == 1
+        else f"pilot_eval_curved_nfe{int(nfe)}.json"
+    )
     if checkpoint_path.parent.name == "checkpoints":
-        return checkpoint_path.parent.parent / "pilot_eval_metrics.json"
+        return checkpoint_path.parent.parent / suffix
     return checkpoint_path.with_name(
-        checkpoint_path.stem + "_pilot_eval_metrics.json"
+        checkpoint_path.stem + "_" + suffix
     )
 
 
 def run(args) -> dict[str, Any]:
     base.validate_cli_args(args)
+    if int(args.nfe) <= 0:
+        raise ValueError("--nfe must be positive")
     checkpoint_path = Path(args.checkpoint)
     payload = base._torch_load_payload(checkpoint_path)
     metadata = _validate_checkpoint(payload)
@@ -149,19 +171,54 @@ def run(args) -> dict[str, Any]:
         )
     model.load_state_dict(payload["model_state"], strict=True)
 
-    result: EvaluationResult = evaluate_nfe1_endpoint(
-        model,
-        loaders.test,
-        total_steps=int(metadata["total_steps"]),
-        device=device,
-        max_batches=args.max_batches,
-        progress_every=(
-            args.progress_every if args.progress_every > 0 else None
-        ),
-        progress_callback=(
-            base._progress if args.progress_every > 0 else None
-        ),
-    )
+    nfe = int(args.nfe)
+    if nfe == 1:
+        result: EvaluationResult = evaluate_nfe1_endpoint(
+            model,
+            loaders.test,
+            total_steps=int(metadata["total_steps"]),
+            device=device,
+            max_batches=args.max_batches,
+            progress_every=(
+                args.progress_every if args.progress_every > 0 else None
+            ),
+            progress_callback=(
+                base._progress if args.progress_every > 0 else None
+            ),
+        )
+        inference_name = "endpoint_direct_x0"
+        reverse_timesteps = [int(metadata["total_steps"]), 0]
+    else:
+        if (
+            metadata["model_identity"]
+            != CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY
+        ):
+            raise ValueError(
+                "NFE>1 curved reverse evaluation requires a dual-role "
+                "SAR bridge checkpoint"
+            )
+        result = evaluate_sar_curved_reverse(
+            model,
+            loaders.test,
+            total_steps=int(metadata["total_steps"]),
+            nfe=nfe,
+            device=device,
+            max_batches=args.max_batches,
+            progress_every=(
+                args.progress_every if args.progress_every > 0 else None
+            ),
+            progress_callback=(
+                base._progress if args.progress_every > 0 else None
+            ),
+        )
+        inference_name = "sar_curved_reverse_projection"
+        reverse_timesteps = [
+            int(v)
+            for v in make_reverse_timesteps(
+                int(metadata["total_steps"]),
+                nfe,
+            ).tolist()
+        ]
 
     output_payload: dict[str, Any] = {
         "format_version": 1,
@@ -200,10 +257,12 @@ def run(args) -> dict[str, Any]:
         ),
         "sar_role": metadata.get("sar_role"),
         "total_steps": int(metadata["total_steps"]),
-        "nfe": 1,
-        "inference": "endpoint_direct_x0",
+        "nfe": nfe,
+        "inference": inference_name,
         "endpoint_conditioning_value": int(metadata["total_steps"]),
-        "schedule_used_during_inference": False,
+        "reverse_timesteps": reverse_timesteps,
+        "curved_geometry_used_during_inference": nfe > 1,
+        "schedule_used_during_inference": nfe > 1,
         "split": "test",
         "split_protocol": PILOT_PROTOCOL,
         "split_audit": split_audit,
@@ -239,6 +298,8 @@ def run(args) -> dict[str, Any]:
                 "output": str(output_path),
                 "model_identity": metadata["model_identity"],
                 "beta_a": metadata.get("beta_a"),
+                "nfe": nfe,
+                "inference": inference_name,
                 "num_samples": result.num_samples,
                 "metrics": result.metrics,
             },
