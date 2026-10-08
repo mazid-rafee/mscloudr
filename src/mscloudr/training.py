@@ -15,6 +15,7 @@ val_endpoint_l1. Random-t validation is diagnostic only.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -33,9 +34,13 @@ DIAGNOSTIC_RANDOM_T_METRIC = "val_random_t_l1"
 
 RAW_T_CONDITIONING = "raw_t"
 PHYSICAL_ALPHA_CONDITIONING = "physical_alpha"
+SINE_INVERSE_CONDITIONING = "sine_inverse"
+MR_INVERSE_CONDITIONING = "mr_inverse"
 SUPPORTED_CONDITIONING_MODES = (
     RAW_T_CONDITIONING,
     PHYSICAL_ALPHA_CONDITIONING,
+    SINE_INVERSE_CONDITIONING,
+    MR_INVERSE_CONDITIONING,
 )
 
 
@@ -125,16 +130,19 @@ def model_conditioning_coordinate(
     total_steps: int,
     conditioning_mode: str = RAW_T_CONDITIONING,
 ) -> torch.Tensor:
-    """Map a bridge state to the scalar coordinate seen by the network.
+    """Map a physical bridge state to the scalar coordinate seen by the model.
 
-    ``raw_t`` reproduces historical DB-CR conditioning exactly: the model sees
-    the sampled schedule parameter t.
+    ``raw_t`` reproduces historical DB-CR conditioning exactly.
 
-    ``physical_alpha`` removes schedule-dependent coordinate semantics: the
-    model sees c = T * alpha, where alpha is the actual physical interpolation
-    coefficient used to construct x_alpha. Scaling by T preserves the legacy
-    numerical conditioning range [0, T] while making equal physical bridge
-    states receive equal conditioning values under every schedule.
+    The remaining modes are controlled reparameterizations of the same
+    physical bridge coordinate alpha:
+
+    - ``physical_alpha``: u = alpha
+    - ``sine_inverse``: u = (2/pi) * asin(alpha)
+    - ``mr_inverse``: u = -(1/3) * log(1-(1-exp(-3))*alpha)
+
+    The model receives c = T*u in every non-raw mode. Therefore changing the
+    conditioning mode does not alter alpha or the constructed bridge state.
     """
 
     total_steps = int(total_steps)
@@ -150,10 +158,36 @@ def model_conditioning_coordinate(
     if mode == RAW_T_CONDITIONING:
         return timesteps
 
-    return alpha.to(
+    alpha_float = alpha.to(
         device=timesteps.device,
         dtype=torch.float32,
-    ) * float(total_steps)
+    )
+    alpha_clamped = torch.clamp(alpha_float, 0.0, 1.0)
+
+    if mode == PHYSICAL_ALPHA_CONDITIONING:
+        normalized = alpha_clamped
+    elif mode == SINE_INVERSE_CONDITIONING:
+        normalized = (2.0 / math.pi) * torch.asin(alpha_clamped)
+    elif mode == MR_INVERSE_CONDITIONING:
+        rate = 3.0
+        scale = 1.0 - math.exp(-rate)
+        normalized = -torch.log1p(-scale * alpha_clamped) / rate
+    else:
+        raise AssertionError(f"unhandled conditioning mode: {mode}")
+
+    # Preserve the canonical endpoints exactly despite floating-point
+    # transcendental roundoff in inverse sine / inverse mean-reverting maps.
+    normalized = torch.where(
+        alpha_clamped <= 0.0,
+        torch.zeros_like(normalized),
+        normalized,
+    )
+    normalized = torch.where(
+        alpha_clamped >= 1.0,
+        torch.ones_like(normalized),
+        normalized,
+    )
+    return normalized * float(total_steps)
 
 
 def random_t_bridge_step(
