@@ -19,9 +19,9 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from .bridge import (
+    deterministic_sar_curved_reverse_step,
     linear_alpha,
     make_reverse_timesteps,
-    make_sar_curved_bridge_state,
 )
 from .metrics import ReferenceMetricAccumulator
 from .training import (
@@ -123,15 +123,18 @@ def evaluate_sar_curved_reverse(
     """Evaluate deterministic reverse inference on the learned SAR-curved path.
 
     The model starts from the exact cloudy endpoint x(alpha=1)=y. At each model
-    evaluation it predicts x0, then the next state is reconstructed using the
-    same curved family used during training:
+    evaluation it predicts x0 and advances with the deterministic reverse
+    update derived for the same curved family used during training:
 
-        x_s = (1-alpha_s) x0_hat + alpha_s y
-              + 4 alpha_s (1-alpha_s) phi(y,z).
+        x_s = (1-r) x0_hat + r x_t + (h_s-r h_t) phi(y,z),
 
-    NFE=1 is exactly equivalent to direct endpoint prediction because the next
-    state is alpha=0 and the curvature envelope is zero. Curvature can affect
-    inference only for NFE >= 2, where at least one intermediate state exists.
+    where r=alpha_s/alpha_t and h(alpha)=4*alpha*(1-alpha). This is the
+    historical straight-bridge reverse update applied after subtracting the
+    known curvature offset, followed by restoring the next curvature offset.
+
+    NFE=1 is exactly equivalent to direct endpoint prediction because
+    alpha_s=0. Curvature can affect inference only for NFE >= 2, where at
+    least one intermediate state exists.
     """
 
     total_steps = int(total_steps)
@@ -232,11 +235,12 @@ def evaluate_sar_curved_reverse(
                     t_next.float(),
                     total_steps,
                 )
-                state = make_sar_curved_bridge_state(
+                state = deterministic_sar_curved_reverse_step(
+                    state,
                     x0_hat,
-                    cloudy,
                     curvature,
-                    alpha_next,
+                    alpha_t=alpha_current,
+                    alpha_s=alpha_next,
                 )
 
             prediction = state
