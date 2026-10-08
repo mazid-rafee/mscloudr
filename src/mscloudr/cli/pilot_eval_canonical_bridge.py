@@ -24,7 +24,10 @@ from mscloudr.evaluation import EvaluationResult, evaluate_nfe1_endpoint
 from mscloudr.metrics import REFERENCE_COMMIT, REFERENCE_REPO
 from mscloudr.models import (
     CANONICAL_BRIDGE_MODEL_IDENTITY,
+    CANONICAL_BRIDGE_OPTICAL_ONLY_MODEL_IDENTITY,
     CanonicalBridgeNet,
+    CanonicalBridgeOpticalOnlyNet,
+    count_canonical_bridge_optical_only_parameters,
     count_canonical_bridge_parameters,
 )
 from mscloudr.reproducibility import seed_everything
@@ -49,9 +52,12 @@ def _validate_checkpoint(payload: dict[str, Any]) -> dict[str, Any]:
     metadata = payload.get("run_metadata")
     if not isinstance(metadata, dict):
         raise ValueError("checkpoint is missing run_metadata")
-    if metadata.get("model_identity") != CANONICAL_BRIDGE_MODEL_IDENTITY:
+    if metadata.get("model_identity") not in {
+        CANONICAL_BRIDGE_MODEL_IDENTITY,
+        CANONICAL_BRIDGE_OPTICAL_ONLY_MODEL_IDENTITY,
+    }:
         raise ValueError(
-            "expected model_identity=canonical_bridge_net"
+            "unsupported CanonicalBridge model_identity"
         )
     if metadata.get("split_protocol") != PILOT_PROTOCOL:
         raise ValueError("checkpoint does not use the fixed pilot10 split")
@@ -61,7 +67,11 @@ def _validate_checkpoint(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("canonical bridge pilot requires physical_alpha conditioning")
     if metadata.get("bridge_geometry") != "straight_linear":
         raise ValueError("canonical bridge pilot expects straight geometry")
-    if metadata.get("sar_input_mode", "paired") not in {"paired", "zero"}:
+    if metadata.get("sar_input_mode", "paired") not in {
+        "paired",
+        "zero",
+        "optical_only_13",
+    }:
         raise ValueError("unsupported sar_input_mode in checkpoint metadata")
     if int(metadata.get("total_steps", 0)) <= 0:
         raise ValueError("checkpoint metadata has invalid total_steps")
@@ -126,8 +136,16 @@ def run(args) -> dict[str, Any]:
         pin_memory=(device.type == "cuda"),
     )
 
-    model = CanonicalBridgeNet(total_steps=int(metadata["total_steps"]))
-    trainable_parameters = count_canonical_bridge_parameters(model)
+    if metadata.get("model_identity") == CANONICAL_BRIDGE_OPTICAL_ONLY_MODEL_IDENTITY:
+        model = CanonicalBridgeOpticalOnlyNet(
+            total_steps=int(metadata["total_steps"])
+        )
+        trainable_parameters = count_canonical_bridge_optical_only_parameters(
+            model
+        )
+    else:
+        model = CanonicalBridgeNet(total_steps=int(metadata["total_steps"]))
+        trainable_parameters = count_canonical_bridge_parameters(model)
     if trainable_parameters != int(metadata["trainable_parameters"]):
         raise RuntimeError(
             "canonical bridge parameter count does not match checkpoint metadata"
@@ -159,7 +177,7 @@ def run(args) -> dict[str, Any]:
         "canonical_checkpoint_filename": (
             checkpoint_path.name == "best_endpoint.pt"
         ),
-        "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
+        "model_identity": metadata["model_identity"],
         "model_family": metadata.get("model_family"),
         "trainable_parameters": trainable_parameters,
         "dbcr_specific_blocks": metadata.get("dbcr_specific_blocks"),
@@ -180,6 +198,11 @@ def run(args) -> dict[str, Any]:
             "capacity_matched_to_multimodal",
             metadata.get("sar_input_mode", "paired") == "zero",
         ),
+        "true_optical_only_13ch": metadata.get(
+            "true_optical_only_13ch",
+            metadata.get("sar_input_mode") == "optical_only_13",
+        ),
+        "input_modalities": metadata.get("input_modalities"),
         "total_steps": int(metadata["total_steps"]),
         "nfe": 1,
         "inference": "endpoint_direct_x0",
@@ -218,7 +241,7 @@ def run(args) -> dict[str, Any]:
         json.dumps(
             {
                 "output": str(output_path),
-                "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
+                "model_identity": metadata["model_identity"],
                 "beta_a": metadata.get("beta_a"),
                 "sar_input_mode": metadata.get("sar_input_mode", "paired"),
                 "num_samples": result.num_samples,
