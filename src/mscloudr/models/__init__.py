@@ -9,11 +9,14 @@ from .blocks import (
 )
 from .canonical_bridge import (
     CANONICAL_BRIDGE_MODEL_IDENTITY,
+    CANONICAL_BRIDGE_OPTICAL_ONLY_MODEL_IDENTITY,
     AlphaFiLM,
     CanonicalBridgeNet,
+    CanonicalBridgeOpticalOnlyNet,
     GatedSARFusion,
     PhysicalAlphaEmbedding,
     ResidualConvBlock,
+    count_canonical_bridge_optical_only_parameters,
     count_canonical_bridge_parameters,
 )
 from .dbcr import (
@@ -44,7 +47,9 @@ __all__ = [
     "AlphaFiLM",
     "AuditedDBCRNet",
     "CANONICAL_BRIDGE_MODEL_IDENTITY",
+    "CANONICAL_BRIDGE_OPTICAL_ONLY_MODEL_IDENTITY",
     "CanonicalBridgeNet",
+    "CanonicalBridgeOpticalOnlyNet",
     "DBCRArchitectureConfig",
     "DBCRNet",
     "GatedSARFusion",
@@ -66,6 +71,7 @@ __all__ = [
     "SFBlock",
     "SimpleGate",
     "SinusoidalTimeEmbedding",
+    "count_canonical_bridge_optical_only_parameters",
     "count_canonical_bridge_parameters",
     "count_legacy_parameters",
     "count_trainable_parameters",
