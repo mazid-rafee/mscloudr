@@ -14,10 +14,12 @@ from pathlib import Path
 from mscloudr.cli import pilot_train as legacy_pilot
 from mscloudr.cli import train as base
 from mscloudr.data import (
+    ReferenceDatasets,
     build_reference_dataloaders,
     discover_sen12mscr,
     load_ignored_sample_ids,
 )
+from mscloudr.data.ablation import ZeroSARDataset
 from mscloudr.data.pilot import (
     PILOT_FRACTION,
     PILOT_PROTOCOL,
@@ -50,6 +52,15 @@ def build_parser():
         schedule="canonical_alpha",
         conditioning=PHYSICAL_ALPHA_CONDITIONING,
         endpoint_prob=0.0,
+    )
+    parser.add_argument(
+        "--sar-input-mode",
+        choices=("paired", "zero"),
+        default="paired",
+        help=(
+            "paired uses the aligned Sentinel-1 input; zero replaces SAR with "
+            "exact zeros for a capacity-matched optical-only control."
+        ),
     )
     return parser
 
@@ -104,6 +115,13 @@ def run(args):
         verify_frozen_membership=True,
     )
     split_audit = pilot_split_audit(pilot_manifest)
+
+    if args.sar_input_mode == "zero":
+        datasets = ReferenceDatasets(
+            train=ZeroSARDataset(datasets.train),
+            val=ZeroSARDataset(datasets.val),
+            test=ZeroSARDataset(datasets.test),
+        )
 
     loaders = build_reference_dataloaders(
         datasets,
@@ -160,7 +178,15 @@ def run(args):
             "pilot_manifest_sample_ids_sha256": pilot_manifest[
                 "sample_ids_sha256"
             ],
-            "run_kind": "pilot10_architecture_independence",
+            "run_kind": (
+                "pilot10_optical_only_capacity_matched"
+                if args.sar_input_mode == "zero"
+                else "pilot10_architecture_independence"
+            ),
+            "sar_input_mode": args.sar_input_mode,
+            "sar_information_available": args.sar_input_mode == "paired",
+            "optical_only_control": args.sar_input_mode == "zero",
+            "capacity_matched_to_multimodal": True,
             "paper_grade": False,
             "endpoint_probability": 0.0,
             "beta_a": beta_a,
@@ -217,6 +243,7 @@ def run(args):
                 "bridge_geometry": "straight_linear",
                 "conditioning_mode": PHYSICAL_ALPHA_CONDITIONING,
                 "training_bridge_measure": metadata["training_bridge_measure"],
+                "sar_input_mode": args.sar_input_mode,
                 "beta_a": beta_a,
                 "epochs": args.epochs,
                 "train_samples": len(datasets.train),
