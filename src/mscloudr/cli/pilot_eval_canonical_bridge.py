@@ -1,4 +1,4 @@
-"""NFE=1 pilot evaluation for CanonicalBridgeNet checkpoints."""
+"""Pilot evaluation for CanonicalBridge and SAR-curved checkpoints."""
 
 from __future__ import annotations
 
@@ -284,7 +284,7 @@ def run(args) -> dict[str, Any]:
     output_path = (
         Path(args.output)
         if args.output is not None
-        else _default_output_path(checkpoint_path)
+        else _default_output_path(checkpoint_path, nfe)
     )
     base._write_json_atomic(
         output_path,
