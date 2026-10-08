@@ -207,11 +207,9 @@ def make_model_training_bridge_state(
     Curvature uses the endpoint-preserving envelope h(alpha)=4*alpha*(1-alpha).
     """
 
-    bridge_state = make_model_training_bridge_state(
-        model,
+    bridge_state = make_bridge_state(
         target,
         cloudy,
-        sar,
         alpha,
     )
 
@@ -263,9 +261,11 @@ def random_t_bridge_step(
         timesteps.float(),
         total_steps,
     )
-    bridge_state = make_bridge_state(
+    bridge_state = make_model_training_bridge_state(
+        model,
         target,
         cloudy,
+        sar,
         alpha,
     )
     conditioning = model_conditioning_coordinate(
