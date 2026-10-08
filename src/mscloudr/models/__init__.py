@@ -16,6 +16,12 @@ from .canonical_bridge import (
     ResidualConvBlock,
     count_canonical_bridge_parameters,
 )
+from .sar_bridge import (
+    CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY,
+    CanonicalDualRoleSARBridgeNet,
+    SARBridgeCurvature,
+    count_canonical_dual_role_sar_bridge_parameters,
+)
 from .dbcr import (
     AuditedDBCRNet,
     DBCRArchitectureConfig,
@@ -44,7 +50,9 @@ __all__ = [
     "AlphaFiLM",
     "AuditedDBCRNet",
     "CANONICAL_BRIDGE_MODEL_IDENTITY",
+    "CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY",
     "CanonicalBridgeNet",
+    "CanonicalDualRoleSARBridgeNet",
     "DBCRArchitectureConfig",
     "DBCRNet",
     "GatedSARFusion",
@@ -63,10 +71,12 @@ __all__ = [
     "PatentTimeEmbeddingConfig",
     "PhysicalAlphaEmbedding",
     "ResidualConvBlock",
+    "SARBridgeCurvature",
     "SFBlock",
     "SimpleGate",
     "SinusoidalTimeEmbedding",
     "count_canonical_bridge_parameters",
+    "count_canonical_dual_role_sar_bridge_parameters",
     "count_legacy_parameters",
     "count_trainable_parameters",
     "sine_bridge_alpha",
