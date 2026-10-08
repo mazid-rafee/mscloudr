@@ -22,8 +22,11 @@ from mscloudr.evaluation import EvaluationResult, evaluate_nfe1_endpoint
 from mscloudr.metrics import REFERENCE_COMMIT, REFERENCE_REPO
 from mscloudr.models import (
     CANONICAL_BRIDGE_MODEL_IDENTITY,
+    CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY,
     CanonicalBridgeNet,
+    CanonicalDualRoleSARBridgeNet,
     count_canonical_bridge_parameters,
+    count_canonical_dual_role_sar_bridge_parameters,
 )
 from mscloudr.reproducibility import seed_everything
 from mscloudr.training import PHYSICAL_ALPHA_CONDITIONING
@@ -47,18 +50,29 @@ def _validate_checkpoint(payload: dict[str, Any]) -> dict[str, Any]:
     metadata = payload.get("run_metadata")
     if not isinstance(metadata, dict):
         raise ValueError("checkpoint is missing run_metadata")
-    if metadata.get("model_identity") != CANONICAL_BRIDGE_MODEL_IDENTITY:
-        raise ValueError(
-            "expected model_identity=canonical_bridge_net"
-        )
+    if metadata.get("model_identity") not in {
+        CANONICAL_BRIDGE_MODEL_IDENTITY,
+        CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY,
+    }:
+        raise ValueError("unsupported canonical bridge model_identity")
     if metadata.get("split_protocol") != PILOT_PROTOCOL:
         raise ValueError("checkpoint does not use the fixed pilot10 split")
     if metadata.get("schedule_name") != "canonical_alpha":
         raise ValueError("canonical bridge pilot requires canonical_alpha")
     if metadata.get("conditioning_mode") != PHYSICAL_ALPHA_CONDITIONING:
         raise ValueError("canonical bridge pilot requires physical_alpha conditioning")
-    if metadata.get("bridge_geometry") != "straight_linear":
-        raise ValueError("canonical bridge pilot expects straight geometry")
+    model_identity = metadata.get("model_identity")
+    bridge_geometry = metadata.get("bridge_geometry")
+    if model_identity == CANONICAL_BRIDGE_MODEL_IDENTITY:
+        if bridge_geometry != "straight_linear":
+            raise ValueError("canonical bridge baseline expects straight geometry")
+    else:
+        if bridge_geometry != "sar_curved_dual_role":
+            raise ValueError("dual-role SAR bridge expects sar_curved_dual_role")
+        if float(metadata.get("sar_bridge_kappa", 0.0)) <= 0.0:
+            raise ValueError("dual-role SAR bridge checkpoint has invalid kappa")
+        if metadata.get("sar_bridge_target_access") is not False:
+            raise ValueError("dual-role SAR bridge must not access clean target")
     if int(metadata.get("total_steps", 0)) <= 0:
         raise ValueError("checkpoint metadata has invalid total_steps")
     return metadata
@@ -115,8 +129,20 @@ def run(args) -> dict[str, Any]:
         pin_memory=(device.type == "cuda"),
     )
 
-    model = CanonicalBridgeNet(total_steps=int(metadata["total_steps"]))
-    trainable_parameters = count_canonical_bridge_parameters(model)
+    if (
+        metadata["model_identity"]
+        == CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY
+    ):
+        model = CanonicalDualRoleSARBridgeNet(
+            total_steps=int(metadata["total_steps"]),
+            sar_bridge_kappa=float(metadata["sar_bridge_kappa"]),
+        )
+        trainable_parameters = count_canonical_dual_role_sar_bridge_parameters(
+            model
+        )
+    else:
+        model = CanonicalBridgeNet(total_steps=int(metadata["total_steps"]))
+        trainable_parameters = count_canonical_bridge_parameters(model)
     if trainable_parameters != int(metadata["trainable_parameters"]):
         raise RuntimeError(
             "canonical bridge parameter count does not match checkpoint metadata"
@@ -148,7 +174,7 @@ def run(args) -> dict[str, Any]:
         "canonical_checkpoint_filename": (
             checkpoint_path.name == "best_endpoint.pt"
         ),
-        "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
+        "model_identity": metadata["model_identity"],
         "model_family": metadata.get("model_family"),
         "trainable_parameters": trainable_parameters,
         "dbcr_specific_blocks": metadata.get("dbcr_specific_blocks"),
@@ -159,6 +185,20 @@ def run(args) -> dict[str, Any]:
         "conditioning_mode": metadata["conditioning_mode"],
         "conditioning_identity": metadata.get("conditioning_identity"),
         "bridge_geometry": metadata.get("bridge_geometry"),
+        "sar_bridge_active": metadata.get("sar_bridge_active", False),
+        "sar_bridge_kappa": metadata.get("sar_bridge_kappa"),
+        "sar_bridge_envelope": metadata.get("sar_bridge_envelope"),
+        "sar_bridge_curvature_input": metadata.get(
+            "sar_bridge_curvature_input"
+        ),
+        "sar_bridge_curvature_output": metadata.get(
+            "sar_bridge_curvature_output"
+        ),
+        "sar_bridge_target_access": metadata.get("sar_bridge_target_access"),
+        "sar_bridge_endpoint_preserving": metadata.get(
+            "sar_bridge_endpoint_preserving"
+        ),
+        "sar_role": metadata.get("sar_role"),
         "total_steps": int(metadata["total_steps"]),
         "nfe": 1,
         "inference": "endpoint_direct_x0",
@@ -197,7 +237,7 @@ def run(args) -> dict[str, Any]:
         json.dumps(
             {
                 "output": str(output_path),
-                "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
+                "model_identity": metadata["model_identity"],
                 "beta_a": metadata.get("beta_a"),
                 "num_samples": result.num_samples,
                 "metrics": result.metrics,
