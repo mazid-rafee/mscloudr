@@ -190,6 +190,50 @@ def model_conditioning_coordinate(
     return normalized * float(total_steps)
 
 
+def make_model_training_bridge_state(
+    model: nn.Module,
+    target: torch.Tensor,
+    cloudy: torch.Tensor,
+    sar: torch.Tensor,
+    alpha: torch.Tensor,
+) -> torch.Tensor:
+    """Construct training bridge with optional model-owned SAR curvature.
+
+    Standard models use the straight bridge. Experimental SAR-aware models may
+    expose bridge_curvature(cloudy, sar). That hook never receives the clean
+    target; target information enters only through the canonical straight
+    interpolation term.
+
+    Curvature uses the endpoint-preserving envelope h(alpha)=4*alpha*(1-alpha).
+    """
+
+    bridge_state = make_model_training_bridge_state(
+        model,
+        target,
+        cloudy,
+        sar,
+        alpha,
+    )
+
+    curvature_fn = getattr(model, "bridge_curvature", None)
+    if curvature_fn is None:
+        return bridge_state
+    if not callable(curvature_fn):
+        raise TypeError("model.bridge_curvature must be callable")
+
+    curvature = curvature_fn(cloudy, sar)
+    if curvature.shape != bridge_state.shape:
+        raise ValueError(
+            "bridge_curvature output shape must match optical bridge state"
+        )
+    if not torch.isfinite(curvature).all():
+        raise ValueError("bridge_curvature produced non-finite values")
+
+    alpha_batch = _batch_alpha(alpha, bridge_state)
+    envelope = 4.0 * alpha_batch * (1.0 - alpha_batch)
+    return bridge_state + envelope * curvature
+
+
 def random_t_bridge_step(
     model: nn.Module,
     batch: Mapping[str, torch.Tensor],
