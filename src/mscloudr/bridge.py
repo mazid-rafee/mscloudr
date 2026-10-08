@@ -370,6 +370,67 @@ def make_reverse_timesteps(
     return timesteps
 
 
+def deterministic_sar_curved_reverse_step(
+    x_t: torch.Tensor,
+    x0_hat: torch.Tensor,
+    curvature: torch.Tensor,
+    *,
+    alpha_t,
+    alpha_s,
+) -> torch.Tensor:
+    """Apply the deterministic reverse update on the SAR-curved bridge.
+
+    For h(alpha)=4*alpha*(1-alpha) and
+        x_alpha=(1-alpha)x0 + alpha*y + h(alpha)*phi,
+    subtracting h(alpha_t)*phi maps the current state back to the straight
+    bridge. We apply the historical deterministic reverse step there, then add
+    h(alpha_s)*phi at the next coordinate.
+
+    This yields
+        x_s=(1-r)x0_hat + r*x_t + (h_s-r*h_t)*phi,
+    where r=alpha_s/alpha_t.
+    """
+
+    if (
+        x_t.shape != x0_hat.shape
+        or curvature.shape != x_t.shape
+    ):
+        raise ValueError(
+            "x_t, x0_hat, and curvature must have identical shapes"
+        )
+    if x_t.ndim != 4:
+        raise ValueError(
+            "x_t, x0_hat, and curvature must have shape [B,C,H,W]"
+        )
+
+    alpha_t = _as_batch_coefficient(
+        alpha_t,
+        reference=x_t,
+    )
+    alpha_s = _as_batch_coefficient(
+        alpha_s,
+        reference=x_t,
+    )
+
+    if torch.any(
+        torch.abs(alpha_t)
+        <= torch.finfo(x_t.dtype).eps
+    ):
+        raise ValueError(
+            "alpha_t must be non-zero for a reverse step"
+        )
+
+    ratio = alpha_s / alpha_t
+    h_t = 4.0 * alpha_t * (1.0 - alpha_t)
+    h_s = 4.0 * alpha_s * (1.0 - alpha_s)
+
+    return (
+        (1.0 - ratio) * x0_hat
+        + ratio * x_t
+        + (h_s - ratio * h_t) * curvature
+    )
+
+
 def deterministic_reverse_step(
     x_t: torch.Tensor,
     x0_hat: torch.Tensor,
