@@ -29,7 +29,10 @@ from mscloudr.data.pilot import (
 )
 from mscloudr.models import (
     CANONICAL_BRIDGE_MODEL_IDENTITY,
+    CANONICAL_BRIDGE_OPTICAL_ONLY_MODEL_IDENTITY,
     CanonicalBridgeNet,
+    CanonicalBridgeOpticalOnlyNet,
+    count_canonical_bridge_optical_only_parameters,
     count_canonical_bridge_parameters,
 )
 from mscloudr.reproducibility import make_torch_generator, seed_everything
@@ -55,11 +58,12 @@ def build_parser():
     )
     parser.add_argument(
         "--sar-input-mode",
-        choices=("paired", "zero"),
+        choices=("paired", "zero", "optical_only_13"),
         default="paired",
         help=(
-            "paired uses the aligned Sentinel-1 input; zero replaces SAR with "
-            "exact zeros for a capacity-matched optical-only control."
+            "paired uses aligned Sentinel-1; zero replaces SAR with exact "
+            "zeros for a capacity-matched no-SAR-information control; "
+            "optical_only_13 removes the SAR pathway entirely."
         ),
     )
     return parser
@@ -131,8 +135,16 @@ def run(args):
         pin_memory=(device.type == "cuda"),
     )
 
-    model = CanonicalBridgeNet(total_steps=args.total_steps)
-    trainable_parameters = count_canonical_bridge_parameters(model)
+    if args.sar_input_mode == "optical_only_13":
+        model = CanonicalBridgeOpticalOnlyNet(total_steps=args.total_steps)
+        model_identity = CANONICAL_BRIDGE_OPTICAL_ONLY_MODEL_IDENTITY
+        trainable_parameters = count_canonical_bridge_optical_only_parameters(
+            model
+        )
+    else:
+        model = CanonicalBridgeNet(total_steps=args.total_steps)
+        model_identity = CANONICAL_BRIDGE_MODEL_IDENTITY
+        trainable_parameters = count_canonical_bridge_parameters(model)
 
     metadata = base._run_metadata(
         args=args,
@@ -146,14 +158,22 @@ def run(args):
     metadata["reproducibility"]["seeds"]["split_seed"] = PILOT_SEED
     metadata.update(
         {
-            "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
-            "model_family": "dual_stream_residual_unet",
+            "model_identity": model_identity,
+            "model_family": (
+                "single_stream_residual_unet"
+                if args.sar_input_mode == "optical_only_13"
+                else "dual_stream_residual_unet"
+            ),
             "dbcr_specific_blocks": False,
             "naf_blocks": False,
             "sf_blocks": False,
             "architecture_widths": [32, 64, 128, 256],
             "architecture_mid_blocks": 2,
-            "sar_fusion": "gated_additive_multiscale",
+            "sar_fusion": (
+                "none"
+                if args.sar_input_mode == "optical_only_13"
+                else "gated_additive_multiscale"
+            ),
             "upsampling": "bilinear_plus_3x3_conv",
             "prediction_target": "direct_x0",
             "bridge_geometry": "straight_linear",
@@ -179,14 +199,29 @@ def run(args):
                 "sample_ids_sha256"
             ],
             "run_kind": (
-                "pilot10_optical_only_capacity_matched"
-                if args.sar_input_mode == "zero"
-                else "pilot10_architecture_independence"
+                "pilot10_true_optical_only_13ch"
+                if args.sar_input_mode == "optical_only_13"
+                else (
+                    "pilot10_no_sar_information_capacity_matched"
+                    if args.sar_input_mode == "zero"
+                    else "pilot10_architecture_independence"
+                )
             ),
             "sar_input_mode": args.sar_input_mode,
             "sar_information_available": args.sar_input_mode == "paired",
-            "optical_only_control": args.sar_input_mode == "zero",
-            "capacity_matched_to_multimodal": True,
+            "optical_only_control": args.sar_input_mode in {
+                "zero",
+                "optical_only_13",
+            },
+            "true_optical_only_13ch": (
+                args.sar_input_mode == "optical_only_13"
+            ),
+            "capacity_matched_to_multimodal": args.sar_input_mode != "optical_only_13",
+            "input_modalities": (
+                ["sentinel2_bridge_state_13ch"]
+                if args.sar_input_mode == "optical_only_13"
+                else ["sentinel2_bridge_state_13ch", "sentinel1_sar_2ch"]
+            ),
             "paper_grade": False,
             "endpoint_probability": 0.0,
             "beta_a": beta_a,
@@ -237,7 +272,7 @@ def run(args):
             {
                 "run_dir": str(run_dir),
                 "device": str(device),
-                "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
+                "model_identity": model_identity,
                 "trainable_parameters": trainable_parameters,
                 "schedule_name": schedule_name,
                 "bridge_geometry": "straight_linear",
@@ -269,7 +304,7 @@ def run(args):
         output_dir=run_dir,
         epochs=args.epochs,
         device=device,
-        model_identity=CANONICAL_BRIDGE_MODEL_IDENTITY,
+        model_identity=model_identity,
         conditioning_mode=PHYSICAL_ALPHA_CONDITIONING,
         lr=args.lr,
         run_metadata=metadata,
