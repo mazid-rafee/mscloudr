@@ -249,6 +249,40 @@ def make_bridge_state(
     )
 
 
+def make_sar_curved_bridge_state(
+    x0_hat: torch.Tensor,
+    cloudy: torch.Tensor,
+    curvature: torch.Tensor,
+    alpha,
+) -> torch.Tensor:
+    """Project a clean prediction onto the SAR-curved bridge at alpha.
+
+    The curvature input is the model-predicted optical-space field phi(y,z),
+    already bounded and scaled by kappa. The endpoint-preserving envelope
+    h(alpha)=4*alpha*(1-alpha) matches training exactly.
+    """
+
+    if x0_hat.shape != cloudy.shape or curvature.shape != cloudy.shape:
+        raise ValueError(
+            "x0_hat, cloudy, and curvature must have identical shapes"
+        )
+    if x0_hat.ndim != 4:
+        raise ValueError(
+            "x0_hat, cloudy, and curvature must have shape [B,C,H,W]"
+        )
+
+    alpha = _as_batch_coefficient(
+        alpha,
+        reference=x0_hat,
+    )
+    envelope = 4.0 * alpha * (1.0 - alpha)
+    return (
+        (1.0 - alpha) * x0_hat
+        + alpha * cloudy
+        + envelope * curvature
+    )
+
+
 def sample_timesteps(
     batch_size: int,
     total_steps: int,
