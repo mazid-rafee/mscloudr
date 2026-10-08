@@ -27,8 +27,11 @@ from mscloudr.data.pilot import (
 )
 from mscloudr.models import (
     CANONICAL_BRIDGE_MODEL_IDENTITY,
+    CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY,
     CanonicalBridgeNet,
+    CanonicalDualRoleSARBridgeNet,
     count_canonical_bridge_parameters,
+    count_canonical_dual_role_sar_bridge_parameters,
 )
 from mscloudr.reproducibility import make_torch_generator, seed_everything
 from mscloudr.runner import fit
@@ -51,6 +54,16 @@ def build_parser():
         conditioning=PHYSICAL_ALPHA_CONDITIONING,
         endpoint_prob=0.0,
     )
+    parser.add_argument(
+        "--sar-bridge-kappa",
+        type=float,
+        default=None,
+        help=(
+            "Enable dual-role SAR-aware bridge curvature with the given "
+            "positive maximum optical-space amplitude. Omit for the straight "
+            "CanonicalBridge baseline."
+        ),
+    )
     return parser
 
 
@@ -70,6 +83,8 @@ def _validate_experiment(args) -> float:
     beta_a = float(args.beta_a)
     if beta_a <= 0.0:
         raise ValueError("--beta-a must be positive")
+    if args.sar_bridge_kappa is not None and float(args.sar_bridge_kappa) <= 0.0:
+        raise ValueError("--sar-bridge-kappa must be positive when provided")
     return beta_a
 
 
@@ -113,8 +128,22 @@ def run(args):
         pin_memory=(device.type == "cuda"),
     )
 
-    model = CanonicalBridgeNet(total_steps=args.total_steps)
-    trainable_parameters = count_canonical_bridge_parameters(model)
+    sar_bridge_active = args.sar_bridge_kappa is not None
+    if sar_bridge_active:
+        model = CanonicalDualRoleSARBridgeNet(
+            total_steps=args.total_steps,
+            sar_bridge_kappa=float(args.sar_bridge_kappa),
+        )
+        model_identity = CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY
+        trainable_parameters = count_canonical_dual_role_sar_bridge_parameters(
+            model
+        )
+        bridge_geometry = "sar_curved_dual_role"
+    else:
+        model = CanonicalBridgeNet(total_steps=args.total_steps)
+        model_identity = CANONICAL_BRIDGE_MODEL_IDENTITY
+        trainable_parameters = count_canonical_bridge_parameters(model)
+        bridge_geometry = "straight_linear"
 
     metadata = base._run_metadata(
         args=args,
@@ -128,7 +157,7 @@ def run(args):
     metadata["reproducibility"]["seeds"]["split_seed"] = PILOT_SEED
     metadata.update(
         {
-            "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
+            "model_identity": model_identity,
             "model_family": "dual_stream_residual_unet",
             "dbcr_specific_blocks": False,
             "naf_blocks": False,
@@ -138,7 +167,29 @@ def run(args):
             "sar_fusion": "gated_additive_multiscale",
             "upsampling": "bilinear_plus_3x3_conv",
             "prediction_target": "direct_x0",
-            "bridge_geometry": "straight_linear",
+            "bridge_geometry": bridge_geometry,
+            "sar_bridge_active": sar_bridge_active,
+            "sar_bridge_kappa": (
+                float(args.sar_bridge_kappa) if sar_bridge_active else None
+            ),
+            "sar_bridge_envelope": (
+                "4*alpha*(1-alpha)" if sar_bridge_active else None
+            ),
+            "sar_bridge_curvature_input": (
+                "cloudy_s2_13ch_plus_paired_s1_vv_vh_2ch"
+                if sar_bridge_active
+                else None
+            ),
+            "sar_bridge_curvature_output": (
+                "bounded_13ch_optical_space" if sar_bridge_active else None
+            ),
+            "sar_bridge_target_access": False if sar_bridge_active else None,
+            "sar_bridge_endpoint_preserving": True if sar_bridge_active else None,
+            "sar_role": (
+                "bridge_geometry_plus_gated_multiscale_feature_fusion"
+                if sar_bridge_active
+                else "gated_multiscale_feature_fusion"
+            ),
             "bridge_coordinate": "physical_alpha",
             "bridge_parameterization": (
                 "alpha=t/T" if not beta_active else "u=t/T; alpha=u^(1/a)"
@@ -160,7 +211,11 @@ def run(args):
             "pilot_manifest_sample_ids_sha256": pilot_manifest[
                 "sample_ids_sha256"
             ],
-            "run_kind": "pilot10_architecture_independence",
+            "run_kind": (
+                "pilot10_dual_role_sar_bridge"
+                if sar_bridge_active
+                else "pilot10_architecture_independence"
+            ),
             "paper_grade": False,
             "endpoint_probability": 0.0,
             "beta_a": beta_a,
@@ -211,10 +266,15 @@ def run(args):
             {
                 "run_dir": str(run_dir),
                 "device": str(device),
-                "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
+                "model_identity": model_identity,
                 "trainable_parameters": trainable_parameters,
                 "schedule_name": schedule_name,
-                "bridge_geometry": "straight_linear",
+                "bridge_geometry": bridge_geometry,
+                "sar_bridge_kappa": (
+                    float(args.sar_bridge_kappa)
+                    if sar_bridge_active
+                    else None
+                ),
                 "conditioning_mode": PHYSICAL_ALPHA_CONDITIONING,
                 "training_bridge_measure": metadata["training_bridge_measure"],
                 "beta_a": beta_a,
@@ -242,7 +302,7 @@ def run(args):
         output_dir=run_dir,
         epochs=args.epochs,
         device=device,
-        model_identity=CANONICAL_BRIDGE_MODEL_IDENTITY,
+        model_identity=model_identity,
         conditioning_mode=PHYSICAL_ALPHA_CONDITIONING,
         lr=args.lr,
         run_metadata=metadata,
