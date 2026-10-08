@@ -9,10 +9,12 @@ from typing import Any
 from mscloudr.checkpointing import CHECKPOINT_FORMAT_VERSION
 from mscloudr.cli import eval as base
 from mscloudr.data import (
+    ReferenceDatasets,
     build_reference_dataloaders,
     discover_sen12mscr,
     load_ignored_sample_ids,
 )
+from mscloudr.data.ablation import ZeroSARDataset
 from mscloudr.data.pilot import (
     PILOT_PROTOCOL,
     build_pilot_datasets,
@@ -59,6 +61,8 @@ def _validate_checkpoint(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("canonical bridge pilot requires physical_alpha conditioning")
     if metadata.get("bridge_geometry") != "straight_linear":
         raise ValueError("canonical bridge pilot expects straight geometry")
+    if metadata.get("sar_input_mode", "paired") not in {"paired", "zero"}:
+        raise ValueError("unsupported sar_input_mode in checkpoint metadata")
     if int(metadata.get("total_steps", 0)) <= 0:
         raise ValueError("checkpoint metadata has invalid total_steps")
     return metadata
@@ -98,6 +102,13 @@ def run(args) -> dict[str, Any]:
         verify_frozen_membership=True,
     )
     split_audit = pilot_split_audit(pilot_manifest)
+
+    if metadata.get("sar_input_mode", "paired") == "zero":
+        datasets = ReferenceDatasets(
+            train=ZeroSARDataset(datasets.train),
+            val=ZeroSARDataset(datasets.val),
+            test=ZeroSARDataset(datasets.test),
+        )
 
     if metadata.get("split_audit") != split_audit:
         raise ValueError("current pilot split audit does not match checkpoint")
@@ -159,6 +170,16 @@ def run(args) -> dict[str, Any]:
         "conditioning_mode": metadata["conditioning_mode"],
         "conditioning_identity": metadata.get("conditioning_identity"),
         "bridge_geometry": metadata.get("bridge_geometry"),
+        "sar_input_mode": metadata.get("sar_input_mode", "paired"),
+        "sar_information_available": metadata.get(
+            "sar_information_available",
+            metadata.get("sar_input_mode", "paired") == "paired",
+        ),
+        "optical_only_control": metadata.get("optical_only_control", False),
+        "capacity_matched_to_multimodal": metadata.get(
+            "capacity_matched_to_multimodal",
+            metadata.get("sar_input_mode", "paired") == "zero",
+        ),
         "total_steps": int(metadata["total_steps"]),
         "nfe": 1,
         "inference": "endpoint_direct_x0",
@@ -199,6 +220,7 @@ def run(args) -> dict[str, Any]:
                 "output": str(output_path),
                 "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
                 "beta_a": metadata.get("beta_a"),
+                "sar_input_mode": metadata.get("sar_input_mode", "paired"),
                 "num_samples": result.num_samples,
                 "metrics": result.metrics,
             },
