@@ -119,3 +119,23 @@ def test_sar_curvature_changes_when_paired_sar_changes():
     assert not torch.equal(phi_a, phi_b)
     assert torch.max(torch.abs(phi_a)) <= 0.05 + 1e-7
     assert torch.max(torch.abs(phi_b)) <= 0.05 + 1e-7
+
+
+def test_zero_initialized_curvature_head_receives_gradient():
+    model = CanonicalDualRoleSARBridgeNet(sar_bridge_kappa=0.05)
+    clean, cloudy, sar = _inputs()
+    alpha = torch.tensor([0.4, 0.6])
+
+    curved = make_model_training_bridge_state(
+        model,
+        clean,
+        cloudy,
+        sar,
+        alpha,
+    )
+    curved.mean().backward()
+
+    grad = model.sar_bridge_curvature.head.weight.grad
+    assert grad is not None
+    assert torch.isfinite(grad).all()
+    assert torch.count_nonzero(grad) > 0
