@@ -19,6 +19,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from .bridge import (
+    deterministic_residual_coordinate_reverse_step,
     deterministic_sar_curved_reverse_step,
     linear_alpha,
     make_reverse_timesteps,
@@ -107,6 +108,201 @@ def _paper_metric_aliases(
         paper_metrics["L1"] = paper_metrics["MAE"]
         paper_counts["L1"] = paper_counts.get("MAE", 0)
     return paper_metrics, paper_counts
+
+
+def evaluate_sar_residual_coordinate_reverse(
+    model: nn.Module,
+    loader: DataLoader,
+    *,
+    total_steps: int,
+    nfe: int,
+    device: str | torch.device,
+    max_batches: int | None = None,
+    progress_every: int | None = None,
+    progress_callback: Callable[[EvaluationProgress], None] | None = None,
+) -> EvaluationResult:
+    """Evaluate matched reverse inference for the SAR residual-coordinate path.
+
+    The trained bridge uses a spatial effective coordinate
+
+        lambda(alpha,y,z)
+          = alpha + kappa*4*alpha*(1-alpha)*g(y,z),
+
+    and state
+        x_lambda=(1-lambda)x0 + lambda*y.
+
+    At each reverse step the same cloudy/SAR pair defines lambda_t and
+    lambda_s, while the network remains conditioned on the nominal physical
+    alpha used during training. The update is
+
+        x_s=(1-lambda_s/lambda_t)*x0_hat
+            +(lambda_s/lambda_t)*x_t.
+
+    NFE=1 reduces exactly to direct endpoint prediction.
+    """
+
+    total_steps = int(total_steps)
+    nfe = int(nfe)
+    if total_steps <= 0:
+        raise ValueError("total_steps must be positive")
+    if nfe <= 0:
+        raise ValueError("nfe must be positive")
+    if max_batches is not None and int(max_batches) <= 0:
+        raise ValueError("max_batches must be positive when provided")
+
+    effective_alpha_fn = getattr(model, "bridge_effective_alpha", None)
+    if effective_alpha_fn is None or not callable(effective_alpha_fn):
+        raise ValueError(
+            "residual-coordinate reverse inference requires "
+            "model.bridge_effective_alpha"
+        )
+
+    device = torch.device(device)
+    model.to(device)
+    model.eval()
+
+    reverse_timesteps = make_reverse_timesteps(
+        total_steps,
+        nfe,
+        device=device,
+    )
+
+    accumulator = ReferenceMetricAccumulator()
+    num_samples = 0
+    num_batches = 0
+    total_batches = _effective_total_batches(loader, max_batches)
+
+    with torch.inference_mode():
+        for batch_index, batch in enumerate(loader):
+            if max_batches is not None and batch_index >= int(max_batches):
+                break
+
+            batch = _move_batch(batch, device=device)
+            for key in ("cloudy", "sar", "target"):
+                if key not in batch:
+                    raise KeyError(
+                        f"evaluation batch is missing required key {key!r}"
+                    )
+
+            cloudy = batch["cloudy"]
+            sar = batch["sar"]
+            target = batch["target"]
+            batch_size = int(target.shape[0])
+            state = cloudy
+
+            for step_index in range(nfe):
+                t_current_scalar = reverse_timesteps[step_index]
+                t_next_scalar = reverse_timesteps[step_index + 1]
+
+                t_current = torch.full(
+                    (batch_size,),
+                    int(t_current_scalar.item()),
+                    device=device,
+                    dtype=torch.long,
+                )
+                alpha_current = linear_alpha(
+                    t_current.float(),
+                    total_steps,
+                )
+                conditioning = model_conditioning_coordinate(
+                    t_current,
+                    alpha_current,
+                    total_steps=total_steps,
+                    conditioning_mode=PHYSICAL_ALPHA_CONDITIONING,
+                )
+
+                x0_hat = model(
+                    state,
+                    conditioning,
+                    sar,
+                )
+                if x0_hat.shape != target.shape:
+                    raise ValueError(
+                        "model prediction shape must match target shape"
+                    )
+
+                t_next = torch.full(
+                    (batch_size,),
+                    int(t_next_scalar.item()),
+                    device=device,
+                    dtype=torch.long,
+                )
+                alpha_next = linear_alpha(
+                    t_next.float(),
+                    total_steps,
+                )
+
+                lambda_current = effective_alpha_fn(
+                    cloudy,
+                    sar,
+                    alpha_current,
+                )
+                lambda_next = effective_alpha_fn(
+                    cloudy,
+                    sar,
+                    alpha_next,
+                )
+                if (
+                    lambda_current.ndim != 4
+                    or lambda_next.ndim != 4
+                    or lambda_current.shape[1] != 1
+                    or lambda_next.shape[1] != 1
+                ):
+                    raise ValueError(
+                        "bridge_effective_alpha must return [B,1,H,W]"
+                    )
+
+                state = deterministic_residual_coordinate_reverse_step(
+                    state,
+                    x0_hat,
+                    lambda_t=lambda_current,
+                    lambda_s=lambda_next,
+                )
+
+            prediction = state
+            accumulator.update_batch(target, prediction)
+
+            num_batches += 1
+            num_samples += batch_size
+
+            batch_number = batch_index + 1
+            if (
+                progress_callback is not None
+                and _should_report(
+                    batch_number,
+                    total_batches,
+                    progress_every,
+                )
+            ):
+                running_metrics, _ = _paper_metric_aliases(
+                    accumulator.compute(),
+                    accumulator.metric_counts(),
+                )
+                progress_callback(
+                    EvaluationProgress(
+                        batch=batch_number,
+                        total_batches=total_batches,
+                        num_samples=num_samples,
+                        metrics=running_metrics,
+                    )
+                )
+
+    metrics, metric_counts = _paper_metric_aliases(
+        accumulator.compute(),
+        accumulator.metric_counts(),
+    )
+
+    if num_samples == 0:
+        raise ValueError(
+            "evaluation loader produced no samples"
+        )
+
+    return EvaluationResult(
+        num_samples=num_samples,
+        num_batches=num_batches,
+        metrics=metrics,
+        metric_counts=metric_counts,
+    )
 
 
 def evaluate_sar_curved_reverse(
