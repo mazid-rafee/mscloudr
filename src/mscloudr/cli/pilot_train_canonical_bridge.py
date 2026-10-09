@@ -64,6 +64,17 @@ def build_parser():
             "CanonicalBridge baseline."
         ),
     )
+    parser.add_argument(
+        "--curved-val-nfes",
+        type=int,
+        nargs="*",
+        default=(),
+        help=(
+            "Optional matched curved-reverse validation NFEs. For example "
+            "--curved-val-nfes 2 3 5 saves best_curved_nfe2.pt, "
+            "best_curved_nfe3.pt, and best_curved_nfe5.pt."
+        ),
+    )
     return parser
 
 
@@ -85,6 +96,14 @@ def _validate_experiment(args) -> float:
         raise ValueError("--beta-a must be positive")
     if args.sar_bridge_kappa is not None and float(args.sar_bridge_kappa) <= 0.0:
         raise ValueError("--sar-bridge-kappa must be positive when provided")
+    curved_val_nfes = tuple(sorted(set(int(nfe) for nfe in args.curved_val_nfes)))
+    if any(nfe < 2 for nfe in curved_val_nfes):
+        raise ValueError("--curved-val-nfes values must be >= 2")
+    if curved_val_nfes and args.sar_bridge_kappa is None:
+        raise ValueError(
+            "--curved-val-nfes requires --sar-bridge-kappa"
+        )
+    args.curved_val_nfes = curved_val_nfes
     return beta_a
 
 
@@ -220,6 +239,7 @@ def run(args):
             "endpoint_probability": 0.0,
             "beta_a": beta_a,
             "beta_b": 1.0,
+            "curved_validation_nfes": list(args.curved_val_nfes),
         }
     )
 
@@ -279,6 +299,7 @@ def run(args):
                 "training_bridge_measure": metadata["training_bridge_measure"],
                 "beta_a": beta_a,
                 "epochs": args.epochs,
+                "curved_validation_nfes": list(args.curved_val_nfes),
                 "train_samples": len(datasets.train),
                 "val_samples": len(datasets.val),
                 "test_samples": len(datasets.test),
@@ -320,6 +341,7 @@ def run(args):
         max_val_batches=(
             args.smoke_val_batches if args.smoke_run else None
         ),
+        curved_validation_nfes=tuple(args.curved_val_nfes),
     )
 
 
