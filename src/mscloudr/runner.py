@@ -21,7 +21,12 @@ import torch.nn as nn
 from torch.optim import Adam, Optimizer
 from torch.utils.data import DataLoader
 
-from .bridge import BridgeSchedule
+from .bridge import (
+    BridgeSchedule,
+    deterministic_sar_curved_reverse_step,
+    linear_alpha,
+    make_reverse_timesteps,
+)
 from .checkpointing import (
     load_training_checkpoint,
     save_training_checkpoint,
@@ -32,6 +37,7 @@ from .training import (
     RAW_T_CONDITIONING,
     WeightedMean,
     endpoint_validation_step,
+    model_conditioning_coordinate,
     random_t_validation_step,
     training_step,
 )
@@ -308,6 +314,131 @@ def run_validation_epoch(
     }
 
 
+
+def run_curved_reverse_validation_epoch(
+    model: nn.Module,
+    loader: DataLoader,
+    *,
+    total_steps: int,
+    nfe: int,
+    device: torch.device,
+    conditioning_mode: str = RAW_T_CONDITIONING,
+    max_batches: int | None = None,
+    epoch: int = 1,
+    progress_every: int | None = None,
+    progress_callback: Callable[[BatchProgress], None] | None = None,
+) -> float:
+    """Validate final L1 using matched SAR-curved reverse inference."""
+
+    nfe = int(nfe)
+    if nfe < 2:
+        raise ValueError("curved reverse validation requires nfe >= 2")
+    if max_batches is not None and int(max_batches) <= 0:
+        raise ValueError("max_batches must be positive when provided")
+
+    curvature_fn = getattr(model, "bridge_curvature", None)
+    if curvature_fn is None or not callable(curvature_fn):
+        raise ValueError(
+            "curved reverse validation requires model.bridge_curvature"
+        )
+
+    model.eval()
+    meter = WeightedMean()
+    total_batches = _effective_total_batches(loader, max_batches)
+    reverse_timesteps = make_reverse_timesteps(
+        total_steps,
+        nfe,
+        device=device,
+    )
+
+    with torch.no_grad():
+        for batch_index, batch in enumerate(loader):
+            if max_batches is not None and batch_index >= int(max_batches):
+                break
+
+            batch = _move_batch(batch, device=device)
+            cloudy = batch["cloudy"]
+            sar = batch["sar"]
+            target = batch["target"]
+            batch_size = int(target.shape[0])
+
+            curvature = curvature_fn(cloudy, sar)
+            if curvature.shape != cloudy.shape:
+                raise ValueError(
+                    "bridge_curvature output shape must match cloudy optical"
+                )
+            if not torch.isfinite(curvature).all():
+                raise ValueError("bridge_curvature produced non-finite values")
+
+            state = cloudy
+            for step_index in range(nfe):
+                t_current_scalar = reverse_timesteps[step_index]
+                t_next_scalar = reverse_timesteps[step_index + 1]
+
+                t_current = torch.full(
+                    (batch_size,),
+                    int(t_current_scalar.item()),
+                    device=device,
+                    dtype=torch.long,
+                )
+                alpha_current = linear_alpha(
+                    t_current.float(),
+                    total_steps,
+                )
+                conditioning = model_conditioning_coordinate(
+                    t_current,
+                    alpha_current,
+                    total_steps=total_steps,
+                    conditioning_mode=conditioning_mode,
+                )
+
+                x0_hat = model(state, conditioning, sar)
+
+                t_next = torch.full(
+                    (batch_size,),
+                    int(t_next_scalar.item()),
+                    device=device,
+                    dtype=torch.long,
+                )
+                alpha_next = linear_alpha(
+                    t_next.float(),
+                    total_steps,
+                )
+                state = deterministic_sar_curved_reverse_step(
+                    state,
+                    x0_hat,
+                    curvature,
+                    alpha_t=alpha_current,
+                    alpha_s=alpha_next,
+                )
+
+            loss = torch.mean(torch.abs(state - target))
+            meter.update(loss, n=batch_size)
+
+            batch_number = batch_index + 1
+            if (
+                progress_callback is not None
+                and _should_report_progress(
+                    batch_number,
+                    total_batches,
+                    progress_every,
+                )
+            ):
+                progress_callback(
+                    BatchProgress(
+                        epoch=int(epoch),
+                        phase=f"val_curved_nfe{nfe}",
+                        batch=batch_number,
+                        total_batches=total_batches,
+                        metrics={
+                            f"val_curved_nfe{nfe}_l1_running": meter.mean,
+                        },
+                    )
+                )
+
+    return meter.mean
+
+
 def _write_history(
     path: Path,
     history: list[EpochMetrics],
@@ -348,6 +479,35 @@ def _read_history(
     return [
         EpochMetrics.from_dict(value)
         for value in values
+    ]
+
+
+
+def _write_curved_history(
+    path: Path,
+    history: list[dict[str, float | int]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(history, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
+def _read_curved_history(
+    path: Path,
+) -> list[dict[str, float | int]]:
+    if not path.is_file():
+        return []
+    values = json.loads(path.read_text(encoding="utf-8"))
+    return [
+        {
+            key: (int(value) if key == "epoch" else float(value))
+            for key, value in item.items()
+        }
+        for item in values
     ]
 
 
@@ -414,6 +574,7 @@ def fit(
     progress_every: int | None = None,
     max_train_batches: int | None = None,
     max_val_batches: int | None = None,
+    curved_validation_nfes: tuple[int, ...] = (),
 ) -> list[EpochMetrics]:
     """Run epoch-boundary training with endpoint-selected checkpoints."""
 
@@ -427,6 +588,18 @@ def fit(
         raise ValueError(
             "total_steps must be positive"
         )
+
+    curved_validation_nfes = tuple(
+        sorted(set(int(nfe) for nfe in curved_validation_nfes))
+    )
+    if any(nfe < 2 for nfe in curved_validation_nfes):
+        raise ValueError("curved_validation_nfes must contain only NFE >= 2")
+    if curved_validation_nfes:
+        curvature_fn = getattr(model, "bridge_curvature", None)
+        if curvature_fn is None or not callable(curvature_fn):
+            raise ValueError(
+                "curved_validation_nfes require model.bridge_curvature"
+            )
 
     device = torch.device(
         device
@@ -453,10 +626,18 @@ def fit(
     history_path = (
         output_dir / "history.json"
     )
+    curved_history_path = (
+        output_dir / "curved_validation_history.json"
+    )
 
     start_epoch = 1
     best_endpoint_l1 = float("inf")
+    best_curved_l1 = {
+        nfe: float("inf")
+        for nfe in curved_validation_nfes
+    }
     history: list[EpochMetrics] = []
+    curved_history: list[dict[str, float | int]] = []
 
     if resume_from is not None:
         payload = load_training_checkpoint(
@@ -478,6 +659,18 @@ def fit(
         history = _read_history(
             history_path
         )
+        curved_history = _read_curved_history(
+            curved_history_path
+        )
+        for nfe in curved_validation_nfes:
+            key = f"val_curved_nfe{nfe}_l1"
+            values = [
+                float(item[key])
+                for item in curved_history
+                if key in item
+            ]
+            if values:
+                best_curved_l1[nfe] = min(values)
 
         if history and history[-1].epoch != int(payload["epoch"]):
             raise ValueError(
@@ -499,6 +692,12 @@ def fit(
         run_metadata=run_metadata,
         max_train_batches=max_train_batches,
         max_val_batches=max_val_batches,
+    )
+    metadata["curved_validation_nfes"] = list(curved_validation_nfes)
+    metadata["curved_checkpoint_selection"] = (
+        "matched_reverse_inference_l1"
+        if curved_validation_nfes
+        else None
     )
 
     for epoch in range(
@@ -534,6 +733,21 @@ def fit(
             progress_callback=batch_progress_callback,
         )
 
+        curved_validation = {}
+        for nfe in curved_validation_nfes:
+            curved_validation[nfe] = run_curved_reverse_validation_epoch(
+                model,
+                val_loader,
+                total_steps=total_steps,
+                nfe=nfe,
+                device=device,
+                conditioning_mode=conditioning_mode,
+                max_batches=max_val_batches,
+                epoch=epoch,
+                progress_every=progress_every,
+                progress_callback=batch_progress_callback,
+            )
+
         metrics = EpochMetrics(
             epoch=epoch,
             train_l1=train_l1,
@@ -560,6 +774,16 @@ def fit(
         checkpoint_metrics = (
             metrics.to_dict()
         )
+        for nfe, value in curved_validation.items():
+            checkpoint_metrics[f"val_curved_nfe{nfe}_l1"] = float(value)
+
+        curved_record: dict[str, float | int] = {
+            "epoch": int(epoch),
+        }
+        for nfe, value in curved_validation.items():
+            curved_record[f"val_curved_nfe{nfe}_l1"] = float(value)
+        if curved_validation:
+            curved_history.append(curved_record)
 
         save_training_checkpoint(
             checkpoint_dir / "latest.pt",
@@ -586,10 +810,35 @@ def fit(
                 run_metadata=metadata,
             )
 
+        for nfe, value in curved_validation.items():
+            if value < best_curved_l1[nfe]:
+                best_curved_l1[nfe] = float(value)
+                curved_metadata = dict(metadata)
+                curved_metadata["checkpoint_selection_metric"] = (
+                    f"val_curved_nfe{nfe}_l1"
+                )
+                curved_metadata["matched_inference_nfe"] = int(nfe)
+                save_training_checkpoint(
+                    checkpoint_dir / f"best_curved_nfe{nfe}.pt",
+                    model=model,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    metrics=checkpoint_metrics,
+                    best_endpoint_l1=best_endpoint_l1,
+                    sampler_generator=sampler_generator,
+                    loaders=loaders,
+                    run_metadata=curved_metadata,
+                )
+
         _write_history(
             history_path,
             history,
         )
+        if curved_validation:
+            _write_curved_history(
+                curved_history_path,
+                curved_history,
+            )
 
         if epoch_callback is not None:
             epoch_callback(metrics)
