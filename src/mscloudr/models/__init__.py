@@ -22,6 +22,12 @@ from .sar_bridge import (
     SARBridgeCurvature,
     count_canonical_dual_role_sar_bridge_parameters,
 )
+from .residual_coordinate_bridge import (
+    CANONICAL_SAR_RESIDUAL_COORDINATE_MODEL_IDENTITY,
+    CanonicalSARResidualCoordinateBridgeNet,
+    SARResidualCoordinateGate,
+    count_canonical_sar_residual_coordinate_parameters,
+)
 from .dbcr import (
     AuditedDBCRNet,
     DBCRArchitectureConfig,
@@ -51,8 +57,10 @@ __all__ = [
     "AuditedDBCRNet",
     "CANONICAL_BRIDGE_MODEL_IDENTITY",
     "CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY",
+    "CANONICAL_SAR_RESIDUAL_COORDINATE_MODEL_IDENTITY",
     "CanonicalBridgeNet",
     "CanonicalDualRoleSARBridgeNet",
+    "CanonicalSARResidualCoordinateBridgeNet",
     "DBCRArchitectureConfig",
     "DBCRNet",
     "GatedSARFusion",
@@ -72,11 +80,13 @@ __all__ = [
     "PhysicalAlphaEmbedding",
     "ResidualConvBlock",
     "SARBridgeCurvature",
+    "SARResidualCoordinateGate",
     "SFBlock",
     "SimpleGate",
     "SinusoidalTimeEmbedding",
     "count_canonical_bridge_parameters",
     "count_canonical_dual_role_sar_bridge_parameters",
+    "count_canonical_sar_residual_coordinate_parameters",
     "count_legacy_parameters",
     "count_trainable_parameters",
     "sine_bridge_alpha",
