@@ -590,6 +590,22 @@ def _batch_progress(
         )
         return
 
+    if progress.phase.startswith("val_curved_nfe"):
+        metric_key = progress.phase + "_l1_running"
+        print(
+            "epoch={epoch} phase={phase} batch={batch}/{total} "
+            "{metric}={value:.6f}".format(
+                epoch=progress.epoch,
+                phase=progress.phase,
+                batch=progress.batch,
+                total=progress.total_batches,
+                metric=metric_key,
+                value=progress.metrics[metric_key],
+            ),
+            flush=True,
+        )
+        return
+
     raise ValueError(
         f"unknown progress phase: {progress.phase!r}"
     )
