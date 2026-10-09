@@ -28,10 +28,13 @@ from mscloudr.metrics import REFERENCE_COMMIT, REFERENCE_REPO
 from mscloudr.models import (
     CANONICAL_BRIDGE_MODEL_IDENTITY,
     CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY,
+    CANONICAL_SAR_RESIDUAL_COORDINATE_MODEL_IDENTITY,
     CanonicalBridgeNet,
     CanonicalDualRoleSARBridgeNet,
+    CanonicalSARResidualCoordinateBridgeNet,
     count_canonical_bridge_parameters,
     count_canonical_dual_role_sar_bridge_parameters,
+    count_canonical_sar_residual_coordinate_parameters,
 )
 from mscloudr.reproducibility import seed_everything
 from mscloudr.training import PHYSICAL_ALPHA_CONDITIONING
@@ -68,6 +71,7 @@ def _validate_checkpoint(payload: dict[str, Any]) -> dict[str, Any]:
     if metadata.get("model_identity") not in {
         CANONICAL_BRIDGE_MODEL_IDENTITY,
         CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY,
+        CANONICAL_SAR_RESIDUAL_COORDINATE_MODEL_IDENTITY,
     }:
         raise ValueError("unsupported canonical bridge model_identity")
     if metadata.get("split_protocol") != PILOT_PROTOCOL:
@@ -81,13 +85,23 @@ def _validate_checkpoint(payload: dict[str, Any]) -> dict[str, Any]:
     if model_identity == CANONICAL_BRIDGE_MODEL_IDENTITY:
         if bridge_geometry != "straight_linear":
             raise ValueError("canonical bridge baseline expects straight geometry")
-    else:
+    elif model_identity == CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY:
         if bridge_geometry != "sar_curved_dual_role":
             raise ValueError("dual-role SAR bridge expects sar_curved_dual_role")
         if float(metadata.get("sar_bridge_kappa", 0.0)) <= 0.0:
             raise ValueError("dual-role SAR bridge checkpoint has invalid kappa")
         if metadata.get("sar_bridge_target_access") is not False:
             raise ValueError("dual-role SAR bridge must not access clean target")
+    else:
+        if bridge_geometry != "sar_residual_coordinate":
+            raise ValueError(
+                "residual-coordinate bridge expects sar_residual_coordinate"
+            )
+        kappa = float(metadata.get("sar_residual_coordinate_kappa", 0.0))
+        if not (0.0 < kappa < 0.25):
+            raise ValueError(
+                "residual-coordinate checkpoint has invalid kappa"
+            )
     if int(metadata.get("total_steps", 0)) <= 0:
         raise ValueError("checkpoint metadata has invalid total_steps")
     return metadata
@@ -162,6 +176,19 @@ def run(args) -> dict[str, Any]:
         trainable_parameters = count_canonical_dual_role_sar_bridge_parameters(
             model
         )
+    elif (
+        metadata["model_identity"]
+        == CANONICAL_SAR_RESIDUAL_COORDINATE_MODEL_IDENTITY
+    ):
+        model = CanonicalSARResidualCoordinateBridgeNet(
+            total_steps=int(metadata["total_steps"]),
+            residual_coordinate_kappa=float(
+                metadata["sar_residual_coordinate_kappa"]
+            ),
+        )
+        trainable_parameters = count_canonical_sar_residual_coordinate_parameters(
+            model
+        )
     else:
         model = CanonicalBridgeNet(total_steps=int(metadata["total_steps"]))
         trainable_parameters = count_canonical_bridge_parameters(model)
@@ -189,6 +216,14 @@ def run(args) -> dict[str, Any]:
         inference_name = "endpoint_direct_x0"
         reverse_timesteps = [int(metadata["total_steps"]), 0]
     else:
+        if (
+            metadata["model_identity"]
+            == CANONICAL_SAR_RESIDUAL_COORDINATE_MODEL_IDENTITY
+        ):
+            raise ValueError(
+                "NFE>1 residual-coordinate reverse inference is not enabled "
+                "in this first experiment step; evaluate NFE=1 only"
+            )
         if (
             metadata["model_identity"]
             != CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY
@@ -254,6 +289,21 @@ def run(args) -> dict[str, Any]:
         "sar_bridge_target_access": metadata.get("sar_bridge_target_access"),
         "sar_bridge_endpoint_preserving": metadata.get(
             "sar_bridge_endpoint_preserving"
+        ),
+        "sar_residual_coordinate_active": metadata.get(
+            "sar_residual_coordinate_active", False
+        ),
+        "sar_residual_coordinate_kappa": metadata.get(
+            "sar_residual_coordinate_kappa"
+        ),
+        "sar_residual_coordinate_gate": metadata.get(
+            "sar_residual_coordinate_gate"
+        ),
+        "sar_residual_coordinate_definition": metadata.get(
+            "sar_residual_coordinate_definition"
+        ),
+        "sar_residual_coordinate_direction": metadata.get(
+            "sar_residual_coordinate_direction"
         ),
         "sar_role": metadata.get("sar_role"),
         "total_steps": int(metadata["total_steps"]),
