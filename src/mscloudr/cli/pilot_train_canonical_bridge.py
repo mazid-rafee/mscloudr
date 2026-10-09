@@ -28,10 +28,13 @@ from mscloudr.data.pilot import (
 from mscloudr.models import (
     CANONICAL_BRIDGE_MODEL_IDENTITY,
     CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY,
+    CANONICAL_SAR_RESIDUAL_COORDINATE_MODEL_IDENTITY,
     CanonicalBridgeNet,
     CanonicalDualRoleSARBridgeNet,
+    CanonicalSARResidualCoordinateBridgeNet,
     count_canonical_bridge_parameters,
     count_canonical_dual_role_sar_bridge_parameters,
+    count_canonical_sar_residual_coordinate_parameters,
 )
 from mscloudr.reproducibility import make_torch_generator, seed_everything
 from mscloudr.runner import fit
@@ -62,6 +65,16 @@ def build_parser():
             "Enable dual-role SAR-aware bridge curvature with the given "
             "positive maximum optical-space amplitude. Omit for the straight "
             "CanonicalBridge baseline."
+        ),
+    )
+    parser.add_argument(
+        "--sar-residual-coordinate-kappa",
+        type=float,
+        default=None,
+        help=(
+            "Enable SAR-gated residual-coordinate bridge geometry. SAR predicts "
+            "a one-channel spatial gate that modulates the effective alpha "
+            "along the clean-to-cloudy residual direction. Requires 0<kappa<0.25."
         ),
     )
     parser.add_argument(
@@ -96,12 +109,27 @@ def _validate_experiment(args) -> float:
         raise ValueError("--beta-a must be positive")
     if args.sar_bridge_kappa is not None and float(args.sar_bridge_kappa) <= 0.0:
         raise ValueError("--sar-bridge-kappa must be positive when provided")
+    if args.sar_residual_coordinate_kappa is not None:
+        kappa = float(args.sar_residual_coordinate_kappa)
+        if not (0.0 < kappa < 0.25):
+            raise ValueError(
+                "--sar-residual-coordinate-kappa must satisfy 0 < kappa < 0.25"
+            )
+    if (
+        args.sar_bridge_kappa is not None
+        and args.sar_residual_coordinate_kappa is not None
+    ):
+        raise ValueError(
+            "--sar-bridge-kappa and --sar-residual-coordinate-kappa "
+            "are mutually exclusive"
+        )
     curved_val_nfes = tuple(sorted(set(int(nfe) for nfe in args.curved_val_nfes)))
     if any(nfe < 2 for nfe in curved_val_nfes):
         raise ValueError("--curved-val-nfes values must be >= 2")
     if curved_val_nfes and args.sar_bridge_kappa is None:
         raise ValueError(
-            "--curved-val-nfes requires --sar-bridge-kappa"
+            "--curved-val-nfes currently requires --sar-bridge-kappa; "
+            "residual-coordinate matched reverse validation is a separate step"
         )
     args.curved_val_nfes = curved_val_nfes
     return beta_a
@@ -148,7 +176,20 @@ def run(args):
     )
 
     sar_bridge_active = args.sar_bridge_kappa is not None
-    if sar_bridge_active:
+    residual_coordinate_active = args.sar_residual_coordinate_kappa is not None
+    if residual_coordinate_active:
+        model = CanonicalSARResidualCoordinateBridgeNet(
+            total_steps=args.total_steps,
+            residual_coordinate_kappa=float(
+                args.sar_residual_coordinate_kappa
+            ),
+        )
+        model_identity = CANONICAL_SAR_RESIDUAL_COORDINATE_MODEL_IDENTITY
+        trainable_parameters = count_canonical_sar_residual_coordinate_parameters(
+            model
+        )
+        bridge_geometry = "sar_residual_coordinate"
+    elif sar_bridge_active:
         model = CanonicalDualRoleSARBridgeNet(
             total_steps=args.total_steps,
             sar_bridge_kappa=float(args.sar_bridge_kappa),
@@ -191,6 +232,27 @@ def run(args):
             "sar_bridge_kappa": (
                 float(args.sar_bridge_kappa) if sar_bridge_active else None
             ),
+            "sar_residual_coordinate_active": residual_coordinate_active,
+            "sar_residual_coordinate_kappa": (
+                float(args.sar_residual_coordinate_kappa)
+                if residual_coordinate_active
+                else None
+            ),
+            "sar_residual_coordinate_gate": (
+                "signed_spatial_1ch_tanh_from_cloudy_s2_plus_s1"
+                if residual_coordinate_active
+                else None
+            ),
+            "sar_residual_coordinate_definition": (
+                "lambda=alpha+kappa*4*alpha*(1-alpha)*g(y,z)"
+                if residual_coordinate_active
+                else None
+            ),
+            "sar_residual_coordinate_direction": (
+                "clean_to_cloudy_residual_y_minus_x0"
+                if residual_coordinate_active
+                else None
+            ),
             "sar_bridge_envelope": (
                 "4*alpha*(1-alpha)" if sar_bridge_active else None
             ),
@@ -205,9 +267,13 @@ def run(args):
             "sar_bridge_target_access": False if sar_bridge_active else None,
             "sar_bridge_endpoint_preserving": True if sar_bridge_active else None,
             "sar_role": (
-                "bridge_geometry_plus_gated_multiscale_feature_fusion"
-                if sar_bridge_active
-                else "gated_multiscale_feature_fusion"
+                "residual_coordinate_geometry_plus_gated_multiscale_feature_fusion"
+                if residual_coordinate_active
+                else (
+                    "bridge_geometry_plus_gated_multiscale_feature_fusion"
+                    if sar_bridge_active
+                    else "gated_multiscale_feature_fusion"
+                )
             ),
             "bridge_coordinate": "physical_alpha",
             "bridge_parameterization": (
@@ -231,9 +297,13 @@ def run(args):
                 "sample_ids_sha256"
             ],
             "run_kind": (
-                "pilot10_dual_role_sar_bridge"
-                if sar_bridge_active
-                else "pilot10_architecture_independence"
+                "pilot10_sar_residual_coordinate_bridge"
+                if residual_coordinate_active
+                else (
+                    "pilot10_dual_role_sar_bridge"
+                    if sar_bridge_active
+                    else "pilot10_architecture_independence"
+                )
             ),
             "paper_grade": False,
             "endpoint_probability": 0.0,
@@ -293,6 +363,11 @@ def run(args):
                 "sar_bridge_kappa": (
                     float(args.sar_bridge_kappa)
                     if sar_bridge_active
+                    else None
+                ),
+                "sar_residual_coordinate_kappa": (
+                    float(args.sar_residual_coordinate_kappa)
+                    if residual_coordinate_active
                     else None
                 ),
                 "conditioning_mode": PHYSICAL_ALPHA_CONDITIONING,
