@@ -23,6 +23,7 @@ from mscloudr.evaluation import (
     EvaluationResult,
     evaluate_nfe1_endpoint,
     evaluate_sar_curved_reverse,
+    evaluate_sar_residual_coordinate_reverse,
 )
 from mscloudr.metrics import REFERENCE_COMMIT, REFERENCE_REPO
 from mscloudr.models import (
@@ -52,8 +53,8 @@ def build_parser():
         default=1,
         help=(
             "Number of model evaluations. NFE=1 is direct endpoint prediction. "
-            "For dual-role SAR bridge checkpoints, NFE>=2 follows the learned "
-            "SAR-curved bridge consistently during reverse inference."
+            "For SAR-geometry checkpoints, NFE>=2 follows the corresponding "
+            "learned bridge consistently during reverse inference."
         ),
     )
     return parser
@@ -220,33 +221,46 @@ def run(args) -> dict[str, Any]:
             metadata["model_identity"]
             == CANONICAL_SAR_RESIDUAL_COORDINATE_MODEL_IDENTITY
         ):
-            raise ValueError(
-                "NFE>1 residual-coordinate reverse inference is not enabled "
-                "in this first experiment step; evaluate NFE=1 only"
+            result = evaluate_sar_residual_coordinate_reverse(
+                model,
+                loaders.test,
+                total_steps=int(metadata["total_steps"]),
+                nfe=nfe,
+                device=device,
+                max_batches=args.max_batches,
+                progress_every=(
+                    args.progress_every if args.progress_every > 0 else None
+                ),
+                progress_callback=(
+                    base._progress if args.progress_every > 0 else None
+                ),
             )
-        if (
+            inference_name = "sar_residual_coordinate_reverse"
+        elif (
             metadata["model_identity"]
-            != CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY
+            == CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY
         ):
-            raise ValueError(
-                "NFE>1 curved reverse evaluation requires a dual-role "
-                "SAR bridge checkpoint"
+            result = evaluate_sar_curved_reverse(
+                model,
+                loaders.test,
+                total_steps=int(metadata["total_steps"]),
+                nfe=nfe,
+                device=device,
+                max_batches=args.max_batches,
+                progress_every=(
+                    args.progress_every if args.progress_every > 0 else None
+                ),
+                progress_callback=(
+                    base._progress if args.progress_every > 0 else None
+                ),
             )
-        result = evaluate_sar_curved_reverse(
-            model,
-            loaders.test,
-            total_steps=int(metadata["total_steps"]),
-            nfe=nfe,
-            device=device,
-            max_batches=args.max_batches,
-            progress_every=(
-                args.progress_every if args.progress_every > 0 else None
-            ),
-            progress_callback=(
-                base._progress if args.progress_every > 0 else None
-            ),
-        )
-        inference_name = "sar_curved_reverse_projection"
+            inference_name = "sar_curved_reverse_projection"
+        else:
+            raise ValueError(
+                "NFE>1 geometry-aware evaluation requires a SAR-geometry "
+                "checkpoint"
+            )
+
         reverse_timesteps = [
             int(v)
             for v in make_reverse_timesteps(
@@ -311,7 +325,16 @@ def run(args) -> dict[str, Any]:
         "inference": inference_name,
         "endpoint_conditioning_value": int(metadata["total_steps"]),
         "reverse_timesteps": reverse_timesteps,
-        "curved_geometry_used_during_inference": nfe > 1,
+        "curved_geometry_used_during_inference": (
+            nfe > 1
+            and metadata["model_identity"]
+            == CANONICAL_DUAL_ROLE_SAR_BRIDGE_MODEL_IDENTITY
+        ),
+        "residual_coordinate_geometry_used_during_inference": (
+            nfe > 1
+            and metadata["model_identity"]
+            == CANONICAL_SAR_RESIDUAL_COORDINATE_MODEL_IDENTITY
+        ),
         "schedule_used_during_inference": nfe > 1,
         "split": "test",
         "split_protocol": PILOT_PROTOCOL,
