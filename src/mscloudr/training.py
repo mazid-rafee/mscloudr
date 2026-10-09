@@ -207,6 +207,33 @@ def make_model_training_bridge_state(
     Curvature uses the endpoint-preserving envelope h(alpha)=4*alpha*(1-alpha).
     """
 
+    effective_alpha_fn = getattr(model, "bridge_effective_alpha", None)
+    if effective_alpha_fn is not None:
+        if not callable(effective_alpha_fn):
+            raise TypeError("model.bridge_effective_alpha must be callable")
+        effective_alpha = effective_alpha_fn(cloudy, sar, alpha)
+        if effective_alpha.ndim != 4 or effective_alpha.shape[1] != 1:
+            raise ValueError(
+                "bridge_effective_alpha must return [B,1,H,W]"
+            )
+        if effective_alpha.shape[0] != target.shape[0]:
+            raise ValueError(
+                "bridge_effective_alpha batch size must match target"
+            )
+        if effective_alpha.shape[-2:] != target.shape[-2:]:
+            raise ValueError(
+                "bridge_effective_alpha spatial size must match target"
+            )
+        if not torch.isfinite(effective_alpha).all():
+            raise ValueError(
+                "bridge_effective_alpha produced non-finite values"
+            )
+        return make_bridge_state(
+            target,
+            cloudy,
+            effective_alpha,
+        )
+
     bridge_state = make_bridge_state(
         target,
         cloudy,
