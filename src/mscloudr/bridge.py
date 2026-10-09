@@ -431,6 +431,75 @@ def deterministic_sar_curved_reverse_step(
     )
 
 
+def deterministic_residual_coordinate_reverse_step(
+    x_t: torch.Tensor,
+    x0_hat: torch.Tensor,
+    *,
+    lambda_t,
+    lambda_s,
+) -> torch.Tensor:
+    """Apply one reverse step for a spatial residual-coordinate bridge.
+
+    The bridge family is
+        x_lambda = (1-lambda) * x0 + lambda * y,
+    where lambda may vary spatially but is shared across optical bands.
+
+    Given a clean prediction x0_hat, the exact deterministic update is
+        x_s = (1-r) * x0_hat + r * x_t,
+    with r=lambda_s/lambda_t.
+
+    If x0_hat is exact and x_t lies on the bridge at lambda_t, this lands
+    exactly on the same bridge at lambda_s.
+    """
+
+    if x_t.shape != x0_hat.shape:
+        raise ValueError(
+            "x_t and x0_hat must have identical shapes"
+        )
+    if x_t.ndim != 4:
+        raise ValueError(
+            "x_t and x0_hat must have shape [B,C,H,W]"
+        )
+
+    lambda_t = _as_batch_coefficient(
+        lambda_t,
+        reference=x_t,
+    )
+    lambda_s = _as_batch_coefficient(
+        lambda_s,
+        reference=x_t,
+    )
+
+    for name, value in (("lambda_t", lambda_t), ("lambda_s", lambda_s)):
+        if value.ndim == 4:
+            if value.shape[0] not in {1, x_t.shape[0]}:
+                raise ValueError(
+                    f"{name} batch dimension must be 1 or match x_t"
+                )
+            if value.shape[1] not in {1, x_t.shape[1]}:
+                raise ValueError(
+                    f"{name} channel dimension must be 1 or match x_t"
+                )
+            if value.shape[-2:] not in {(1, 1), x_t.shape[-2:]}:
+                raise ValueError(
+                    f"{name} spatial dimensions must broadcast to x_t"
+                )
+
+    if torch.any(
+        torch.abs(lambda_t)
+        <= torch.finfo(x_t.dtype).eps
+    ):
+        raise ValueError(
+            "lambda_t must be non-zero for a reverse step"
+        )
+
+    ratio = lambda_s / lambda_t
+    return (
+        (1.0 - ratio) * x0_hat
+        + ratio * x_t
+    )
+
+
 def deterministic_reverse_step(
     x_t: torch.Tensor,
     x0_hat: torch.Tensor,
