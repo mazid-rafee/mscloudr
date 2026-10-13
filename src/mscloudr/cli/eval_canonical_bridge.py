@@ -36,6 +36,19 @@ SUPPORTED_CANONICAL_CONDITIONING = {
     SINE_INVERSE_CONDITIONING,
     MR_INVERSE_CONDITIONING,
 }
+DEFAULT_CANONICAL_WIDTHS = (32, 64, 128, 256)
+
+
+def _checkpoint_widths(metadata: dict[str, Any]) -> tuple[int, int, int, int]:
+    """Read checkpoint architecture, including older baseline checkpoints."""
+    widths = metadata.get("architecture_widths", DEFAULT_CANONICAL_WIDTHS)
+    if (
+        not isinstance(widths, (list, tuple))
+        or len(widths) != 4
+        or any(type(width) is not int or width <= 0 for width in widths)
+    ):
+        raise ValueError("checkpoint architecture_widths must be four positive integers")
+    return tuple(widths)
 
 
 def build_parser():
@@ -85,6 +98,7 @@ def _validate_checkpoint(
         raise ValueError("checkpoint metadata has invalid total_steps")
     if float(metadata.get("beta_a", 0.0)) <= 0.0:
         raise ValueError("checkpoint metadata has invalid beta_a")
+    _checkpoint_widths(metadata)
     if (
         metadata.get("paper_grade") is False
         and not allow_smoke_checkpoint
@@ -146,7 +160,10 @@ def run(args) -> dict[str, Any]:
         pin_memory=(device.type == "cuda"),
     )
 
-    model = CanonicalBridgeNet(total_steps=int(metadata["total_steps"]))
+    widths = _checkpoint_widths(metadata)
+    model = CanonicalBridgeNet(
+        widths=widths, total_steps=int(metadata["total_steps"])
+    )
     trainable_parameters = count_canonical_bridge_parameters(model)
     if trainable_parameters != int(metadata["trainable_parameters"]):
         raise RuntimeError(
@@ -163,6 +180,7 @@ def run(args) -> dict[str, Any]:
                 "checkpoint_epoch": int(payload.get("epoch", 0)),
                 "device": str(device),
                 "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
+                "architecture_widths": list(widths),
                 "training_bridge_measure": metadata.get(
                     "training_bridge_measure"
                 ),
@@ -211,6 +229,7 @@ def run(args) -> dict[str, Any]:
         "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
         "model_family": metadata.get("model_family"),
         "trainable_parameters": trainable_parameters,
+        "architecture_widths": list(widths),
         "dbcr_specific_blocks": metadata.get("dbcr_specific_blocks"),
         "schedule_name": metadata["schedule_name"],
         "training_bridge_measure": metadata.get("training_bridge_measure"),
