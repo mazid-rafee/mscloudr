@@ -49,6 +49,7 @@ from mscloudr.training import (
 
 
 DEFAULT_EPOCHS = 50
+DEFAULT_CANONICAL_WIDTHS = (32, 64, 128, 256)
 SUPPORTED_CANONICAL_CONDITIONING = (
     PHYSICAL_ALPHA_CONDITIONING,
     SINE_INVERSE_CONDITIONING,
@@ -69,6 +70,17 @@ def build_parser() -> argparse.ArgumentParser:
     schedule_action.default = "canonical_alpha"
 
     parser.set_defaults(epochs=DEFAULT_EPOCHS)
+    parser.add_argument(
+        "--widths",
+        type=int,
+        nargs=4,
+        metavar=("W0", "W1", "W2", "W3"),
+        default=DEFAULT_CANONICAL_WIDTHS,
+        help=(
+            "Four encoder widths (decoder mirrors them). "
+            "Default: 32 64 128 256; CanonicalBridge-M: 48 96 192 384."
+        ),
+    )
     parser.add_argument(
         "--beta-a",
         type=float,
@@ -93,6 +105,8 @@ def build_parser() -> argparse.ArgumentParser:
 def _validate_experiment(args: argparse.Namespace) -> float:
     if args.schedule != "canonical_alpha":
         raise ValueError("CanonicalBridgeNet full runs require canonical_alpha")
+    if len(args.widths) != 4 or any(width <= 0 for width in args.widths):
+        raise ValueError("--widths requires four positive integers")
     beta_a = float(args.beta_a)
     if not math.isfinite(beta_a) or beta_a <= 0.0:
         raise ValueError("--beta-a must be finite and positive")
@@ -216,7 +230,7 @@ def _run_metadata(
         "dbcr_specific_blocks": False,
         "naf_blocks": False,
         "sf_blocks": False,
-        "architecture_widths": [32, 64, 128, 256],
+        "architecture_widths": list(args.widths),
         "architecture_mid_blocks": 2,
         "sar_fusion": "gated_additive_multiscale",
         "upsampling": "bilinear_plus_3x3_conv",
@@ -259,6 +273,9 @@ def _resume_identity(metadata: dict[str, Any]) -> dict[str, Any]:
     return {
         "model_identity": metadata["model_identity"],
         "trainable_parameters": metadata["trainable_parameters"],
+        "architecture_widths": metadata.get(
+            "architecture_widths", list(DEFAULT_CANONICAL_WIDTHS)
+        ),
         "bridge_geometry": metadata["bridge_geometry"],
         "schedule_name": metadata["schedule_name"],
         "training_bridge_measure": metadata["training_bridge_measure"],
@@ -334,7 +351,9 @@ def run(args: argparse.Namespace):
         pin_memory=(device.type == "cuda"),
     )
 
-    model = CanonicalBridgeNet(total_steps=args.total_steps)
+    model = CanonicalBridgeNet(
+        widths=tuple(args.widths), total_steps=args.total_steps
+    )
     trainable_parameters = count_canonical_bridge_parameters(model)
     schedule = _beta_a1_schedule(beta_a)
 
@@ -366,6 +385,7 @@ def run(args: argparse.Namespace):
                 "device": str(device),
                 "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
                 "trainable_parameters": trainable_parameters,
+                "architecture_widths": list(args.widths),
                 "training_bridge_measure": metadata["training_bridge_measure"],
                 "beta_a": beta_a,
                 "conditioning_coordinate": args.conditioning_coordinate,
