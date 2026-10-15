@@ -21,6 +21,7 @@ from mscloudr.bridge import make_bridge_state
 from mscloudr.cli import eval as base
 from mscloudr.cli.eval_canonical_bridge import (
     _checkpoint_widths,
+    _checkpoint_backbone,
     _validate_checkpoint,
 )
 from mscloudr.data import (
@@ -95,7 +96,11 @@ def _load_model(
 ) -> tuple[nn.Module, int]:
     widths = _checkpoint_widths(metadata)
     total_steps = int(metadata["total_steps"])
-    model = CanonicalBridgeNet(widths=widths, total_steps=total_steps)
+    model = CanonicalBridgeNet(
+        widths=widths,
+        total_steps=total_steps,
+        backbone_variant=_checkpoint_backbone(metadata),
+    )
     actual_parameters = count_canonical_bridge_parameters(model)
     if actual_parameters != int(metadata["trainable_parameters"]):
         raise RuntimeError(
@@ -329,6 +334,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "path": str(checkpoint_paths["a"]),
             "epoch": int(payloads["a"].get("epoch", 0)),
             "widths": list(_checkpoint_widths(metadata["a"])),
+            "backbone_variant": _checkpoint_backbone(metadata["a"]),
             "trainable_parameters": int(metadata["a"]["trainable_parameters"]),
             "total_steps": models["a"][1],
         },
@@ -336,6 +342,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "path": str(checkpoint_paths["b"]),
             "epoch": int(payloads["b"].get("epoch", 0)),
             "widths": list(_checkpoint_widths(metadata["b"])),
+            "backbone_variant": _checkpoint_backbone(metadata["b"]),
             "trainable_parameters": int(metadata["b"]["trainable_parameters"]),
             "total_steps": models["b"][1],
         },
