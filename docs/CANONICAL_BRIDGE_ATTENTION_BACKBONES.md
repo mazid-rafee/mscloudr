@@ -49,26 +49,6 @@ PYTHONPATH="$PWD/src" python -m pytest -q \
 
 ~~~bash
 for BACKBONE in swin hdit_global; do
-  PYTHONPATH="$PWD/src" CUBLAS_WORKSPACE_CONFIG=:4096:8 \
-  python -m mscloudr.cli.train_canonical_bridge \
-    --run-name "CanonicalBridge_$BACKBONE_MRCond_smoke_seed42" \
-    --output-root "../mscloudr/outputs" \
-    --widths 32 64 128 256 \
-    --backbone "$BACKBONE" --beta-a 1.0 \
-    --conditioning-coordinate mr_inverse \
-    --train-seed 42 --sampler-seed 42 \
-    --batch-size 4 --epochs 1 \
-    --smoke-run --smoke-train-batches 2 --smoke-val-batches 2 \
-    --device cuda:6
-done
-~~~
-
-Note: use an explicit RUN name if running the above as written in shell;
-the sequence "$BACKBONE_MRCond" would otherwise be treated as one shell
-variable. Prefer the corrected smoke loop below:
-
-~~~bash
-for BACKBONE in swin hdit_global; do
   RUN=$(printf 'CanonicalBridge_%s_MRCond_smoke_seed42' "$BACKBONE")
   PYTHONPATH="$PWD/src" CUBLAS_WORKSPACE_CONFIG=:4096:8 \
   python -m mscloudr.cli.train_canonical_bridge \
