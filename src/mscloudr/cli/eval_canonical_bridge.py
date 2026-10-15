@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from mscloudr.checkpointing import CHECKPOINT_FORMAT_VERSION
+from mscloudr.models.canonical_attention import ATTENTION_BACKBONES
 from mscloudr.cli import eval as base
 from mscloudr.data import (
     REFERENCE_PROTOCOL,
@@ -49,6 +50,14 @@ def _checkpoint_widths(metadata: dict[str, Any]) -> tuple[int, int, int, int]:
     ):
         raise ValueError("checkpoint architecture_widths must be four positive integers")
     return tuple(widths)
+
+
+def _checkpoint_backbone(metadata: dict[str, Any]) -> str:
+    """Older CanonicalBridge checkpoints default to the unchanged CNN."""
+    backbone = metadata.get("backbone_variant", "cnn")
+    if backbone not in ATTENTION_BACKBONES:
+        raise ValueError(f"unsupported checkpoint backbone_variant: {backbone!r}")
+    return backbone
 
 
 def build_parser():
@@ -99,6 +108,7 @@ def _validate_checkpoint(
     if float(metadata.get("beta_a", 0.0)) <= 0.0:
         raise ValueError("checkpoint metadata has invalid beta_a")
     _checkpoint_widths(metadata)
+    _checkpoint_backbone(metadata)
     if (
         metadata.get("paper_grade") is False
         and not allow_smoke_checkpoint
@@ -162,7 +172,9 @@ def run(args) -> dict[str, Any]:
 
     widths = _checkpoint_widths(metadata)
     model = CanonicalBridgeNet(
-        widths=widths, total_steps=int(metadata["total_steps"])
+        widths=widths,
+        total_steps=int(metadata["total_steps"]),
+        backbone_variant=_checkpoint_backbone(metadata),
     )
     trainable_parameters = count_canonical_bridge_parameters(model)
     if trainable_parameters != int(metadata["trainable_parameters"]):
@@ -181,6 +193,8 @@ def run(args) -> dict[str, Any]:
                 "device": str(device),
                 "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
                 "architecture_widths": list(widths),
+        "backbone_variant": _checkpoint_backbone(metadata),
+                "backbone_variant": _checkpoint_backbone(metadata),
                 "training_bridge_measure": metadata.get(
                     "training_bridge_measure"
                 ),
