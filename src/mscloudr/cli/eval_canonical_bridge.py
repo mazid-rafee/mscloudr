@@ -193,7 +193,6 @@ def run(args) -> dict[str, Any]:
                 "device": str(device),
                 "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
                 "architecture_widths": list(widths),
-        "backbone_variant": _checkpoint_backbone(metadata),
                 "backbone_variant": _checkpoint_backbone(metadata),
                 "training_bridge_measure": metadata.get(
                     "training_bridge_measure"
@@ -244,6 +243,7 @@ def run(args) -> dict[str, Any]:
         "model_family": metadata.get("model_family"),
         "trainable_parameters": trainable_parameters,
         "architecture_widths": list(widths),
+        "backbone_variant": _checkpoint_backbone(metadata),
         "dbcr_specific_blocks": metadata.get("dbcr_specific_blocks"),
         "schedule_name": metadata["schedule_name"],
         "training_bridge_measure": metadata.get("training_bridge_measure"),
