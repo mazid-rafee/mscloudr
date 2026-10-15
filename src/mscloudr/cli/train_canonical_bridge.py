@@ -20,6 +20,11 @@ from pathlib import Path
 from typing import Any
 
 from mscloudr.bridge import get_bridge_schedule
+from mscloudr.models.canonical_attention import (
+    ATTENTION_BACKBONES,
+    DEEP_STAGE_ATTENTION_DEPTH,
+    SWIN_WINDOW_SIZE,
+)
 from mscloudr.cli import train as base
 from mscloudr.data import (
     REFERENCE_PROTOCOL,
@@ -71,6 +76,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.set_defaults(epochs=DEFAULT_EPOCHS)
     parser.add_argument(
+        "--backbone",
+        choices=ATTENTION_BACKBONES,
+        default="cnn",
+        help="CNN baseline, deep Swin windows, or HDiT-inspired deep global attention.",
+    )
+    parser.add_argument(
         "--widths",
         type=int,
         nargs=4,
@@ -107,6 +118,8 @@ def _validate_experiment(args: argparse.Namespace) -> float:
         raise ValueError("CanonicalBridgeNet full runs require canonical_alpha")
     if len(args.widths) != 4 or any(width <= 0 for width in args.widths):
         raise ValueError("--widths requires four positive integers")
+    if args.backbone not in ATTENTION_BACKBONES:
+        raise ValueError(f"unsupported CanonicalBridge backbone: {args.backbone}")
     beta_a = float(args.beta_a)
     if not math.isfinite(beta_a) or beta_a <= 0.0:
         raise ValueError("--beta-a must be finite and positive")
@@ -231,6 +244,20 @@ def _run_metadata(
         "naf_blocks": False,
         "sf_blocks": False,
         "architecture_widths": list(args.widths),
+        "backbone_variant": args.backbone,
+        "attention_window_size": (
+            SWIN_WINDOW_SIZE if args.backbone == "swin" else None
+        ),
+        "deep_encoder_attention_stages": (
+            [2, 3] if args.backbone == "swin" else
+            [3] if args.backbone == "hdit_global" else []
+        ),
+        "deep_stage_attention_depth": (
+            DEEP_STAGE_ATTENTION_DEPTH if args.backbone != "cnn" else None
+        ),
+        "global_attention_stages": (
+            [3, "bottleneck"] if args.backbone == "hdit_global" else []
+        ),
         "architecture_mid_blocks": 2,
         "sar_fusion": "gated_additive_multiscale",
         "upsampling": "bilinear_plus_3x3_conv",
@@ -276,6 +303,7 @@ def _resume_identity(metadata: dict[str, Any]) -> dict[str, Any]:
         "architecture_widths": metadata.get(
             "architecture_widths", list(DEFAULT_CANONICAL_WIDTHS)
         ),
+        "backbone_variant": metadata.get("backbone_variant", "cnn"),
         "bridge_geometry": metadata["bridge_geometry"],
         "schedule_name": metadata["schedule_name"],
         "training_bridge_measure": metadata["training_bridge_measure"],
@@ -352,7 +380,9 @@ def run(args: argparse.Namespace):
     )
 
     model = CanonicalBridgeNet(
-        widths=tuple(args.widths), total_steps=args.total_steps
+        widths=tuple(args.widths),
+        total_steps=args.total_steps,
+        backbone_variant=args.backbone,
     )
     trainable_parameters = count_canonical_bridge_parameters(model)
     schedule = _beta_a1_schedule(beta_a)
@@ -386,6 +416,7 @@ def run(args: argparse.Namespace):
                 "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
                 "trainable_parameters": trainable_parameters,
                 "architecture_widths": list(args.widths),
+                "backbone_variant": args.backbone,
                 "training_bridge_measure": metadata["training_bridge_measure"],
                 "beta_a": beta_a,
                 "conditioning_coordinate": args.conditioning_coordinate,
