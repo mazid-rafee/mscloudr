@@ -12,6 +12,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .canonical_attention import (
+    ATTENTION_BACKBONES,
+    SWIN_WINDOW_SIZE,
+    GlobalAttentionBlock,
+    SwinStage,
+    WindowAttentionBlock,
+)
+
 
 CANONICAL_BRIDGE_MODEL_IDENTITY = "canonical_bridge_net"
 
@@ -105,9 +113,14 @@ class CanonicalBridgeNet(nn.Module):
       stage 2: 128 x 64 x 64
       stage 3: 256 x 32 x 32
 
-    The network predicts x0 directly.  It never receives schedule identity or
-    raw diffusion timestep semantics; the supplied conditioning coordinate is
-    interpreted as c=T*alpha and normalized back to physical alpha internally.
+    The network predicts x0 directly. The conditioning coordinate is
+    interpreted as c=T*u and normalized internally, where u may be the
+    MR-inverse reparameterization supplied by the training pipeline.
+
+    backbone_variant='cnn': unchanged 7.65M baseline.
+    backbone_variant='swin': shifted-window attention at stages 3/4 and mid.
+    backbone_variant='hdit_global': global attention at stage 4 and mid.
+    The SAR encoder, per-scale fusion, FiLM, decoder, and head are unchanged.
     """
 
     def __init__(
@@ -118,6 +131,7 @@ class CanonicalBridgeNet(nn.Module):
         alpha_dim: int = 128,
         total_steps: int = 1000,
         mid_blocks: int = 2,
+        backbone_variant: str = "cnn",
     ):
         super().__init__()
         if len(widths) < 2:
@@ -127,6 +141,14 @@ class CanonicalBridgeNet(nn.Module):
         self.in_sar = int(in_sar)
         self.widths = tuple(int(v) for v in widths)
         self.total_steps = int(total_steps)
+        if backbone_variant not in ATTENTION_BACKBONES:
+            raise ValueError(
+                f"unknown CanonicalBridge backbone {backbone_variant!r}; "
+                f"supported: {ATTENTION_BACKBONES}"
+            )
+        if len(self.widths) != 4:
+            raise ValueError("CanonicalBridge requires exactly four encoder stages")
+        self.backbone_variant = backbone_variant
 
         self.alpha_embedding = PhysicalAlphaEmbedding(
             dim=alpha_dim,
@@ -144,7 +166,16 @@ class CanonicalBridgeNet(nn.Module):
         self.sar_downs = nn.ModuleList()
 
         for i, channels in enumerate(widths):
-            self.opt_blocks.append(ResidualConvBlock(channels))
+            if backbone_variant == "swin" and i in (2, 3):
+                optical_block = SwinStage(channels)
+            elif backbone_variant == "hdit_global" and i == 3:
+                optical_block = nn.Sequential(
+                    GlobalAttentionBlock(channels),
+                    GlobalAttentionBlock(channels),
+                )
+            else:
+                optical_block = ResidualConvBlock(channels)
+            self.opt_blocks.append(optical_block)
             self.sar_blocks.append(ResidualConvBlock(channels))
             self.fusions.append(GatedSARFusion(channels))
             self.enc_films.append(AlphaFiLM(alpha_dim, channels))
@@ -157,9 +188,23 @@ class CanonicalBridgeNet(nn.Module):
                     nn.Conv2d(channels, next_channels, 3, stride=2, padding=1)
                 )
 
-        self.mid_blocks = nn.ModuleList(
-            [ResidualConvBlock(widths[-1]) for _ in range(mid_blocks)]
-        )
+        if backbone_variant == "swin":
+            mid_modules = [
+                WindowAttentionBlock(
+                    widths[-1],
+                    shift_size=(i % 2) * (SWIN_WINDOW_SIZE // 2),
+                )
+                for i in range(mid_blocks)
+            ]
+        elif backbone_variant == "hdit_global":
+            mid_modules = [
+                GlobalAttentionBlock(widths[-1]) for _ in range(mid_blocks)
+            ]
+        else:
+            mid_modules = [
+                ResidualConvBlock(widths[-1]) for _ in range(mid_blocks)
+            ]
+        self.mid_blocks = nn.ModuleList(mid_modules)
         self.mid_films = nn.ModuleList(
             [AlphaFiLM(alpha_dim, widths[-1]) for _ in range(mid_blocks)]
         )
