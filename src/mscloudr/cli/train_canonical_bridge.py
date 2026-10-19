@@ -305,6 +305,13 @@ def _run_metadata(
         "reproducibility": seed_metadata,
     }
     metadata.update(_measure_metadata(beta_a))
+    if float(args.endpoint_probability) > 0.0:
+        rho = float(args.endpoint_probability)
+        metadata["training_bridge_measure"] = "endpoint_mixture_uniform_discrete_alpha_grid"
+        metadata["training_bridge_measure_definition"] = (
+            f"t~(1-{rho})*Uniform{{0,...,T}}+{rho}*delta_T; alpha=t/T"
+        )
+        metadata["alpha_sampling_identity"] = "uniform_t_plus_endpoint_bernoulli"
     metadata.update(_conditioning_metadata(args.conditioning_coordinate))
     return metadata
 
