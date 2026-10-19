@@ -1,9 +1,9 @@
 """Architecture-independent bridge restoration backbone.
 
-The model deliberately avoids DB-CR-specific NAF/SF blocks.  It consumes the
-physical bridge state x_alpha, SAR guidance, and a physical-alpha conditioning
-coordinate.  Bridge geometry and the training measure remain external to the
-network so they can be varied independently.
+The default model preserves the original non-DBCR CNN restoration blocks.
+An opt-in NAF variant replaces optical encoder, bottleneck and decoder
+residual blocks with the repository's established NAFNet-style NAFBlock.
+The SAR stream, gated fusion, FiLM, geometry and training measure stay fixed.
 """
 
 from __future__ import annotations
@@ -11,6 +11,11 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from .blocks import NAFBlock
+
+
+CANONICAL_BACKBONES = ("cnn", "naf")
 
 
 CANONICAL_BRIDGE_MODEL_IDENTITY = "canonical_bridge_net"
@@ -118,15 +123,26 @@ class CanonicalBridgeNet(nn.Module):
         alpha_dim: int = 128,
         total_steps: int = 1000,
         mid_blocks: int = 2,
+        backbone_variant: str = "cnn",
     ):
         super().__init__()
         if len(widths) < 2:
             raise ValueError("widths must contain at least two stages")
+        if backbone_variant not in CANONICAL_BACKBONES:
+            raise ValueError(
+                f"unsupported CanonicalBridge backbone: {backbone_variant!r}; "
+                f"choose from {CANONICAL_BACKBONES}"
+            )
 
         self.in_opt = int(in_opt)
         self.in_sar = int(in_sar)
         self.widths = tuple(int(v) for v in widths)
         self.total_steps = int(total_steps)
+        self.backbone_variant = backbone_variant
+
+        # Only optical restoration blocks are substituted.  SAR processing,
+        # multi-scale gating, alpha FiLM and up/downsampling stay identical.
+        optical_block = NAFBlock if backbone_variant == "naf" else ResidualConvBlock
 
         self.alpha_embedding = PhysicalAlphaEmbedding(
             dim=alpha_dim,
@@ -144,7 +160,7 @@ class CanonicalBridgeNet(nn.Module):
         self.sar_downs = nn.ModuleList()
 
         for i, channels in enumerate(widths):
-            self.opt_blocks.append(ResidualConvBlock(channels))
+            self.opt_blocks.append(optical_block(channels))
             self.sar_blocks.append(ResidualConvBlock(channels))
             self.fusions.append(GatedSARFusion(channels))
             self.enc_films.append(AlphaFiLM(alpha_dim, channels))
@@ -158,7 +174,7 @@ class CanonicalBridgeNet(nn.Module):
                 )
 
         self.mid_blocks = nn.ModuleList(
-            [ResidualConvBlock(widths[-1]) for _ in range(mid_blocks)]
+            [optical_block(widths[-1]) for _ in range(mid_blocks)]
         )
         self.mid_films = nn.ModuleList(
             [AlphaFiLM(alpha_dim, widths[-1]) for _ in range(mid_blocks)]
@@ -174,7 +190,7 @@ class CanonicalBridgeNet(nn.Module):
             self.up_convs.append(
                 nn.Conv2d(in_channels, out_channels, 3, padding=1)
             )
-            self.dec_blocks.append(ResidualConvBlock(out_channels))
+            self.dec_blocks.append(optical_block(out_channels))
             self.dec_films.append(AlphaFiLM(alpha_dim, out_channels))
 
         self.head = nn.Conv2d(widths[0], in_opt, 3, padding=1)
