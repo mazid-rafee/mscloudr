@@ -18,7 +18,7 @@ if [[ "$#" -lt 1 || "$#" -gt 2 ]]; then
   exit 2
 fi
 MODE="$1"
-PAIR_MODE="\${2:-sequential}"
+PAIR_MODE="${2:-sequential}"
 case "$MODE" in
   smoke|pilot) ;;
   *) echo "Expected smoke or pilot, received: $MODE" >&2; exit 2 ;;
