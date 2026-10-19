@@ -29,6 +29,7 @@ from mscloudr.data import (
     load_ignored_sample_ids,
     reference_split_audit,
 )
+from mscloudr.models.canonical_bridge import CANONICAL_BACKBONES
 from mscloudr.models import (
     CANONICAL_BRIDGE_MODEL_IDENTITY,
     CanonicalBridgeNet,
@@ -71,6 +72,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.set_defaults(epochs=DEFAULT_EPOCHS)
     parser.add_argument(
+        "--backbone",
+        choices=CANONICAL_BACKBONES,
+        default="cnn",
+        help="Optical block design: unchanged CNN or NAFNet-style NAFBlock.",
+    )
+    parser.add_argument(
+        "--endpoint-probability",
+        type=float,
+        default=0.0,
+        help=(
+            "Per-sample probability of replacing uniform t with exact t=T "
+            "during TRAINING only. 0 reproduces the canonical sampler."
+        ),
+    )
+    parser.add_argument(
         "--widths",
         type=int,
         nargs=4,
@@ -110,6 +126,16 @@ def _validate_experiment(args: argparse.Namespace) -> float:
     beta_a = float(args.beta_a)
     if not math.isfinite(beta_a) or beta_a <= 0.0:
         raise ValueError("--beta-a must be finite and positive")
+    if args.backbone not in CANONICAL_BACKBONES:
+        raise ValueError(f"unsupported backbone: {args.backbone!r}")
+    endpoint_probability = float(args.endpoint_probability)
+    if (
+        not math.isfinite(endpoint_probability)
+        or not 0.0 <= endpoint_probability <= 1.0
+    ):
+        raise ValueError("--endpoint-probability must be finite and in [0,1]")
+    if endpoint_probability != 0.0 and not math.isclose(beta_a, 1.0, abs_tol=1e-12):
+        raise ValueError("endpoint-mixture study requires --beta-a 1.0")
     if args.conditioning_coordinate not in SUPPORTED_CANONICAL_CONDITIONING:
         raise ValueError(
             f"unsupported conditioning coordinate: {args.conditioning_coordinate!r}"
@@ -225,12 +251,26 @@ def _run_metadata(
     metadata: dict[str, Any] = {
         "format_version": 1,
         "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
-        "model_family": "dual_stream_residual_unet",
+        "model_family": (
+            "dual_stream_naf_optical_unet"
+            if args.backbone == "naf"
+            else "dual_stream_residual_unet"
+        ),
         "trainable_parameters": int(trainable_parameters),
         "dbcr_specific_blocks": False,
-        "naf_blocks": False,
+        "naf_blocks": args.backbone == "naf",
         "sf_blocks": False,
         "architecture_widths": list(args.widths),
+        "backbone_variant": args.backbone,
+        "endpoint_probability": float(args.endpoint_probability),
+        "endpoint_mixture_definition": (
+            "train t~(1-rho)*Uniform{0,...,T}+rho*delta_T; "
+            "validation random-t remains uniform; endpoint eval t=T"
+        ),
+        "nominal_endpoint_mass": (
+            float(args.endpoint_probability)
+            + (1.0 - float(args.endpoint_probability)) / (int(args.total_steps) + 1)
+        ),
         "architecture_mid_blocks": 2,
         "sar_fusion": "gated_additive_multiscale",
         "upsampling": "bilinear_plus_3x3_conv",
@@ -276,6 +316,8 @@ def _resume_identity(metadata: dict[str, Any]) -> dict[str, Any]:
         "architecture_widths": metadata.get(
             "architecture_widths", list(DEFAULT_CANONICAL_WIDTHS)
         ),
+        "backbone_variant": metadata.get("backbone_variant", "cnn"),
+        "endpoint_probability": metadata.get("endpoint_probability", 0.0),
         "bridge_geometry": metadata["bridge_geometry"],
         "schedule_name": metadata["schedule_name"],
         "training_bridge_measure": metadata["training_bridge_measure"],
@@ -352,7 +394,9 @@ def run(args: argparse.Namespace):
     )
 
     model = CanonicalBridgeNet(
-        widths=tuple(args.widths), total_steps=args.total_steps
+        widths=tuple(args.widths),
+        total_steps=args.total_steps,
+        backbone_variant=args.backbone,
     )
     trainable_parameters = count_canonical_bridge_parameters(model)
     schedule = _beta_a1_schedule(beta_a)
@@ -386,6 +430,8 @@ def run(args: argparse.Namespace):
                 "model_identity": CANONICAL_BRIDGE_MODEL_IDENTITY,
                 "trainable_parameters": trainable_parameters,
                 "architecture_widths": list(args.widths),
+                "backbone_variant": args.backbone,
+                "endpoint_probability": float(args.endpoint_probability),
                 "training_bridge_measure": metadata["training_bridge_measure"],
                 "beta_a": beta_a,
                 "conditioning_coordinate": args.conditioning_coordinate,
@@ -418,6 +464,7 @@ def run(args: argparse.Namespace):
         device=device,
         model_identity=CANONICAL_BRIDGE_MODEL_IDENTITY,
         conditioning_mode=args.conditioning_coordinate,
+        endpoint_probability=float(args.endpoint_probability),
         lr=args.lr,
         run_metadata=metadata,
         resume_from=args.resume,
