@@ -152,6 +152,7 @@ def run_training_epoch(
     sampler_generator: torch.Generator,
     device: torch.device,
     conditioning_mode: str = RAW_T_CONDITIONING,
+    endpoint_probability: float = 0.0,
     max_batches: int | None = None,
     epoch: int = 1,
     progress_every: int | None = None,
@@ -184,6 +185,7 @@ def run_training_epoch(
             total_steps=total_steps,
             sampler_generator=sampler_generator,
             conditioning_mode=conditioning_mode,
+            endpoint_probability=endpoint_probability,
         )
 
         optimizer.zero_grad(
@@ -405,6 +407,7 @@ def fit(
     device: str | torch.device,
     model_identity: str = "legacy_dbcr",
     conditioning_mode: str = RAW_T_CONDITIONING,
+    endpoint_probability: float = 0.0,
     lr: float = HISTORICAL_LEARNING_RATE,
     optimizer: Optimizer | None = None,
     run_metadata: Mapping[str, Any] | None = None,
@@ -427,6 +430,12 @@ def fit(
         raise ValueError(
             "total_steps must be positive"
         )
+
+    import math
+
+    endpoint_probability = float(endpoint_probability)
+    if not math.isfinite(endpoint_probability) or not 0.0 <= endpoint_probability <= 1.0:
+        raise ValueError("endpoint_probability must be finite and in [0, 1]")
 
     device = torch.device(
         device
@@ -514,6 +523,7 @@ def fit(
             sampler_generator=sampler_generator,
             device=device,
             conditioning_mode=conditioning_mode,
+            endpoint_probability=endpoint_probability,
             max_batches=max_train_batches,
             epoch=epoch,
             progress_every=progress_every,
