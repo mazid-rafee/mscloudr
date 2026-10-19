@@ -88,29 +88,73 @@ They do NOT evaluate TEST. Early NAFBlock convergence can differ
 because residual scales initialize at zero; pilot results are not
 necessarily predictive of 50-epoch performance.
 
-## Stage 3: selected 50-epoch runs with automatic held-out test
+## Stage 3: Full 2x4 factorial, 50 epochs each, automatic test evaluation
 
-Example CNN rho=.25 on GPU 6, and NAF rho=.25 on GPU 7:
+All eight smoke tests have passed. Running the complete 2x4 factorial
+instead of filtering using three-epoch pilots is reasonable (higher
+compute cost, but avoids early-convergence screening bias). There are
+eight runs on four GPUs.
+
+First check that GPUs 4-7 are free and previous pilot workers have stopped:
 
 ~~~bash
-nohup bash scripts/run_canonical_endpoint.sh cnn 0.25 6 full \
-  > ../mscloudr/outputs/CanonicalBridge_CNN_Endpoint25_full_seed42.log \
-  2>&1 < /dev/null &
-disown
-
-nohup bash scripts/run_canonical_endpoint.sh naf 0.25 7 full \
-  > ../mscloudr/outputs/CanonicalBridge_NAF_Endpoint25_full_seed42.log \
-  2>&1 < /dev/null &
-disown
+nvidia-smi -i 4,5,6,7
 ~~~
 
-The full runner automatically invokes eval_canonical_bridge on
-checkpoints/best_endpoint.pt after successful 50-epoch training, performing
-NFE=1 full 7,899-sample TEST evaluation. Full results are saved in
-eval_metrics.json. Each experiment uses its own log and output directory.
+Recommended: four detached GPU workers. Each GPU runs CNN for 50 epochs,
+then NAF for 50 epochs, with the same rho on that GPU:
 
-First full NAF rho=0 is important as a backbone-only control. Repeated
-seeds are needed before claiming robust gains.
+~~~bash
+bash scripts/launch_canonical_endpoint_matrix.sh full
+~~~
 
-Checkpoint metadata records the backbone, rho, training measure, and
-actual endpoint probability; resume rejects changes to backbone/rho.
+Optional if both jobs fit concurrently on each GPU: eight active
+training jobs (two competing for GPU memory/compute on each GPU):
+
+~~~bash
+bash scripts/launch_canonical_endpoint_matrix.sh full parallel
+~~~
+
+Run only one of the options. Parallel may OOM or slow down; sequential is
+safer. Confirm cluster policy permits long-running concurrent jobs.
+
+Mappings:
+- GPU 4 -> CNN/NAF rho=0%
+- GPU 5 -> CNN/NAF rho=10%
+- GPU 6 -> CNN/NAF rho=25%
+- GPU 7 -> CNN/NAF rho=50%
+
+Each worker is detached with nohup and disown; logs in the original
+mscloudr/outputs. All full training runs use 50 epochs, 107,142 training
+samples and 7,176 validation samples. The best validation endpoint
+checkpoint is evaluated NFE=1 automatically on all 7,899 test samples
+after each successful training job.
+
+Monitor the final log line from each sequential worker:
+
+~~~bash
+watch -n 5 'for spec in 4:0 5:10 6:25 7:50; do gpu=${spec%%:*}; p=${spec#*:}; f=$(printf "../mscloudr/outputs/CanonicalBridge_Endpoint%s_full_GPU%s_sequential.log" "$p" "$gpu"); printf "GPU%s rho=%s%%: " "$gpu" "$p"; if [ -f "$f" ]; then tail -n 1 "$f"; else echo "not started"; fi; done'
+~~~
+
+For parallel mode, change the suffix "_sequential.log" to "_parallel.log".
+
+Each run creates its own output directory:
+
+~~~text
+../mscloudr/outputs/CanonicalBridge_CNN_Endpoint0_full_seed42
+../mscloudr/outputs/CanonicalBridge_CNN_Endpoint10_full_seed42
+../mscloudr/outputs/CanonicalBridge_CNN_Endpoint25_full_seed42
+../mscloudr/outputs/CanonicalBridge_CNN_Endpoint50_full_seed42
+../mscloudr/outputs/CanonicalBridge_NAF_Endpoint0_full_seed42
+../mscloudr/outputs/CanonicalBridge_NAF_Endpoint10_full_seed42
+../mscloudr/outputs/CanonicalBridge_NAF_Endpoint25_full_seed42
+../mscloudr/outputs/CanonicalBridge_NAF_Endpoint50_full_seed42
+~~~
+
+Evaluation writes eval_metrics.json in each full run directory.
+The eight TEST evaluations are descriptive outcomes of a predeclared
+factorial; do not repeatedly tune based on TEST winners. Replicate
+selected outcomes with additional independent seeds for paper claims.
+
+Checkpoint metadata records backbone, rho, sampling measure and endpoint
+mass. The CNN rho=0 run is a code-parity control for historical CNN.
