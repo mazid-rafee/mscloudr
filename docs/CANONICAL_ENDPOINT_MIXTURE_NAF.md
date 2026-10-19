@@ -40,38 +40,53 @@ PYTHONPATH="$PWD/src" python -m pytest -q \
   tests/test_canonical_bridge_alpha_grid.py
 ~~~
 
-## Stage 1: detached smoke tests of all eight combinations
+## Stage 1: Smoke tests (completed on GPUs 6 and 7)
+
+All eight smoke experiments completed on Ruby. No need to rerun.
+
+## Stage 2: Four-GPU three-epoch pilots (full validation; no test)
+
+Updated matrix launcher maps one endpoint probability to each GPU:
+
+| GPU | rho | Job 1 | Job 2 |
+|---|---|---|---|
+| 4 | 0% | CNN-0 | NAF-0 |
+| 5 | 10% | CNN-10 | NAF-10 |
+| 6 | 25% | CNN-25 | NAF-25 |
+| 7 | 50% | CNN-50 | NAF-50 |
+
+Default: CNN and NAF **sequential per GPU** (four processes active
+simultaneously across four GPUs, eight jobs total). This avoids GPU
+OOM and contention.
 
 ~~~bash
-bash scripts/launch_canonical_endpoint_matrix.sh smoke
-~~~
-
-This launches separate nohup workers:
-- GPU6 runs CNN rho=0,0.10,0.25,0.50 sequentially.
-- GPU7 runs NAF rho=0,0.10,0.25,0.50 sequentially.
-- Each smoke runs 2 training batches and 2 validation batches and is
-  labeled paper_grade=false.
-
-Watch the last line for both:
-
-~~~bash
-watch -n 5 'for m in cnn naf; do f=$(printf "../mscloudr/outputs/CanonicalBridge_%s_EndpointMatrix_smoke.log" "$m"); printf "%s: " "$m"; tail -n 1 "$f"; done'
-~~~
-
-## Stage 2: detached three-epoch pilots (full validation; no test)
-
-~~~bash
+nvidia-smi -i 4,5,6,7
 bash scripts/launch_canonical_endpoint_matrix.sh pilot
 ~~~
 
+Optional explicit two **concurrent** processes per GPU (eight active
+training processes across four GPUs); only if there is sufficient free
+VRAM and the cluster permits GPU sharing. This may be SLOWER if competing
+jobs saturate each GPU:
+
 ~~~bash
-watch -n 5 'for m in cnn naf; do f=$(printf "../mscloudr/outputs/CanonicalBridge_%s_EndpointMatrix_pilot.log" "$m"); printf "%s: " "$m"; tail -n 1 "$f"; done'
+bash scripts/launch_canonical_endpoint_matrix.sh pilot parallel
 ~~~
 
-Three-epoch pilots are only for plumbing/early optimization. They are NOT
-reliable final predictors (NAF residual scales initialize at zero).
-Use the full val_endpoint_l1 and the historical full-trained CNN
-baseline to choose full runs; do not select configs based on TEST.
+Do not launch both modes for the same pilot names: the runner refuses
+to overwrite an existing output directory.
+
+Each GPU writes a separate nohup log under the ORIGINAL mscloudr/outputs
+directory. Monitor one last line per GPU (for sequential mode):
+
+~~~bash
+watch -n 5 'for gpu in 4 5 6 7; do case "$gpu" in 4) p=0;; 5) p=10;; 6) p=25;; 7) p=50;; esac; f=$(printf "../mscloudr/outputs/CanonicalBridge_Endpoint%s_pilot_GPU%s_sequential.log" "$p" "$gpu"); printf "GPU%s rho=%s%%: " "$gpu" "$p"; if [ -f "$f" ]; then tail -n 1 "$f"; else echo "not started"; fi; done'
+~~~
+
+Pilots run three epochs with full 7,176-sample validation every epoch.
+They do NOT evaluate TEST. Early NAFBlock convergence can differ
+because residual scales initialize at zero; pilot results are not
+necessarily predictive of 50-epoch performance.
 
 ## Stage 3: selected 50-epoch runs with automatic held-out test
 
