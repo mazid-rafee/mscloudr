@@ -6,7 +6,7 @@
 # GPU 6: CNN+NAF rho=0.25
 # GPU 7: CNN+NAF rho=0.50
 #
-# Usage: bash scripts/launch_canonical_endpoint_matrix.sh smoke|pilot [sequential|parallel]
+# Usage: bash scripts/launch_canonical_endpoint_matrix.sh smoke|pilot|full [sequential|parallel]
 #
 # Default sequential = 4 active training processes, one per GPU.
 # Optional parallel = 8 active training processes, TWO per GPU;
@@ -14,14 +14,14 @@
 set -euo pipefail
 
 if [[ "$#" -lt 1 || "$#" -gt 2 ]]; then
-  echo "Usage: $0 smoke|pilot [sequential|parallel]" >&2
+  echo "Usage: $0 smoke|pilot|full [sequential|parallel]" >&2
   exit 2
 fi
 MODE="$1"
 PAIR_MODE="${2:-sequential}"
 case "$MODE" in
-  smoke|pilot) ;;
-  *) echo "Expected smoke or pilot, received: $MODE" >&2; exit 2 ;;
+  smoke|pilot|full) ;;
+  *) echo "Expected smoke, pilot, or full, received: $MODE" >&2; exit 2 ;;
 esac
 case "$PAIR_MODE" in
   sequential|parallel) ;;
@@ -73,4 +73,4 @@ done
 
 echo "Four detached GPU workers launched; eight jobs total."
 echo "Do not relaunch with an existing mode/rho output directory."
-echo "For full 50-epoch runs, select configurations using validation results."
+echo "Mode=full trains 50 epochs and automatically runs held-out NFE=1 test after each successful training run."
