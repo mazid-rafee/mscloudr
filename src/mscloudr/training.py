@@ -198,8 +198,9 @@ def random_t_bridge_step(
     total_steps: int,
     sampler_generator: torch.Generator,
     conditioning_mode: str = RAW_T_CONDITIONING,
+    endpoint_probability: float = 0.0,
 ) -> BridgeStepResult:
-    """Compute one random-t direct-x0-prediction L1 batch.
+    """Compute one mixed-t direct-x0-prediction L1 batch.
 
     This function is used for both training and diagnostic random-t validation.
     The caller decides whether gradients are enabled.
@@ -209,12 +210,33 @@ def random_t_bridge_step(
         batch
     )
 
+    endpoint_probability = float(endpoint_probability)
+    if not math.isfinite(endpoint_probability) or not 0.0 <= endpoint_probability <= 1.0:
+        raise ValueError("endpoint_probability must be finite and in [0, 1]")
+
     timesteps = sample_timesteps(
         target.shape[0],
         total_steps,
         generator=sampler_generator,
         device=target.device,
     )
+    if endpoint_probability == 1.0:
+        timesteps = torch.full_like(timesteps, int(total_steps))
+    elif endpoint_probability > 0.0:
+        # Draw Bernoulli decisions with the checkpointed sampler generator.
+        # For probability zero, consume NO additional random values:
+        # the historical CNN baseline is preserved byte-for-byte.
+        use_endpoint = torch.rand(
+            (target.shape[0],),
+            generator=sampler_generator,
+            device=sampler_generator.device,
+        ).to(device=target.device) < endpoint_probability
+        timesteps = torch.where(
+            use_endpoint,
+            torch.full_like(timesteps, int(total_steps)),
+            timesteps,
+        )
+
     alpha = schedule(
         timesteps.float(),
         total_steps,
@@ -267,6 +289,7 @@ def training_step(
     total_steps: int,
     sampler_generator: torch.Generator,
     conditioning_mode: str = RAW_T_CONDITIONING,
+    endpoint_probability: float = 0.0,
 ) -> BridgeStepResult:
     """Training computation before optimizer zero_grad/backward/step."""
 
@@ -277,6 +300,7 @@ def training_step(
         total_steps=total_steps,
         sampler_generator=sampler_generator,
         conditioning_mode=conditioning_mode,
+        endpoint_probability=endpoint_probability,
     )
 
 
