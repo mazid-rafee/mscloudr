@@ -158,3 +158,44 @@ selected outcomes with additional independent seeds for paper claims.
 
 Checkpoint metadata records backbone, rho, sampling measure and endpoint
 mass. The CNN rho=0 run is a code-parity control for historical CNN.
+
+
+## Logs: current combined GPU logs vs per-model logs
+
+**Already-running parallel jobs:** The initial launcher wrote two model
+stdout streams to the same per-GPU log. Since the progress lines do
+not include the model identifier, they cannot safely be assigned to CNN
+versus NAF retroactively or while those processes remain running.
+
+Without interrupting the current jobs, use the per-run history files
+to obtain model-specific complete-epoch metrics:
+
+~~~bash
+watch -n 5 'python scripts/monitor_canonical_endpoint.py --write-logs'
+~~~
+
+This displays a separate row for every one of the eight model runs,
+including process status, completed epoch, train L1, validation endpoint
+L1, and test PSNR when available. It also creates/appends one individual
+status file per model as each epoch finishes:
+
+~~~text
+../mscloudr/outputs/CanonicalBridge_CNN_Endpoint0_full_seed42.status.log
+../mscloudr/outputs/CanonicalBridge_NAF_Endpoint0_full_seed42.status.log
+~~~
+
+The same naming scheme is used for endpoint rates 10,25,50.
+The monitor does not provide per-batch progress for the already-running
+models; the process streams were combined at launch. It never changes,
+signals or restarts training.
+
+**Future launches:** The updated matrix launcher redirects each CNN/NAF
+run to its own full stdout file, e.g.:
+
+~~~text
+../mscloudr/outputs/CanonicalBridge_CNN_Endpoint0_full_seed42.log
+../mscloudr/outputs/CanonicalBridge_NAF_Endpoint0_full_seed42.log
+~~~
+
+This future-launch change does NOT affect already-running jobs. Do not
+restart the current eight jobs only to obtain per-batch log separation.
