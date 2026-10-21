@@ -124,3 +124,49 @@ def test_model_identity_and_audit_report_unknowns():
     assert audit["num_time_conditioned_nafblocks"] == 14
     assert audit["unresolved_assumptions"]
     assert audit["architecture_config"]["time_sharing"] == "per_block"
+
+
+def test_existing_sine_bridge_training_step_accepts_new_model():
+    from mscloudr.bridge import get_bridge_schedule
+    from mscloudr.training import training_step
+
+    torch.manual_seed(7)
+    model = SourceGuidedDBCRNet(compact_config())
+    batch = {
+        "cloudy": torch.randn(1, 13, 16, 16),
+        "sar": torch.randn(1, 2, 16, 16),
+        "target": torch.randn(1, 13, 16, 16),
+    }
+    sampler = torch.Generator(device="cpu").manual_seed(42)
+    step = training_step(
+        model,
+        batch,
+        schedule=get_bridge_schedule("original"),
+        total_steps=1000,
+        sampler_generator=sampler,
+    )
+    assert step.prediction.shape == batch["target"].shape
+    assert torch.isfinite(step.loss)
+    step.loss.backward()
+    assert model.output_head.weight.grad is not None
+
+
+def test_checkpoint_architecture_metadata_reconstructs_exact_variant():
+    from mscloudr.cli.eval_source_guided_dbcr import _checkpoint_config
+    from mscloudr.data import REFERENCE_PROTOCOL
+
+    cfg = compact_config(sharing="per_width")
+    checkpoint_metadata = {
+        "model_identity": SOURCE_GUIDED_DBCR_IDENTITY,
+        "split_protocol": REFERENCE_PROTOCOL,
+        "schedule_name": "original",
+        "conditioning_mode": "raw_t",
+        "total_steps": cfg.total_steps,
+        "architecture_config": cfg.audit_config(),
+    }
+    restored = _checkpoint_config(checkpoint_metadata)
+    assert restored == cfg
+    assert (
+        SourceGuidedDBCRNet(restored).architecture_audit()["trainable_parameters"]
+        == SourceGuidedDBCRNet(cfg).architecture_audit()["trainable_parameters"]
+    )
