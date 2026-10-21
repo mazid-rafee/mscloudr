@@ -31,6 +31,11 @@ from .legacy_dbcr import (
     LegacySFBlock,
     count_legacy_parameters,
 )
+from .source_guided_dbcr import (
+    SOURCE_GUIDED_DBCR_IDENTITY,
+    SourceGuidedDBCRConfig,
+    SourceGuidedDBCRNet,
+)
 from .patent_blocks import (
     PatentFeatureMapLayerNorm,
     PatentSimplifiedChannelAttention,
@@ -64,6 +69,9 @@ __all__ = [
     "PhysicalAlphaEmbedding",
     "ResidualConvBlock",
     "SFBlock",
+    "SOURCE_GUIDED_DBCR_IDENTITY",
+    "SourceGuidedDBCRConfig",
+    "SourceGuidedDBCRNet",
     "SimpleGate",
     "SinusoidalTimeEmbedding",
     "count_canonical_bridge_parameters",
