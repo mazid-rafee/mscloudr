@@ -121,6 +121,6 @@ def test_model_identity_and_audit_report_unknowns():
     audit = SourceGuidedDBCRNet(compact_config()).architecture_audit()
     assert audit["model_identity"] == SOURCE_GUIDED_DBCR_IDENTITY
     assert audit["status"] == "source_guided_not_official_paper_exact"
-    assert audit["num_time_conditioned_nafblocks"] == 12
+    assert audit["num_time_conditioned_nafblocks"] == 14
     assert audit["unresolved_assumptions"]
     assert audit["architecture_config"]["time_sharing"] == "per_block"
