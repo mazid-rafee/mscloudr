@@ -24,11 +24,13 @@ from mscloudr.data import (
     build_reference_datasets, discover_sen12mscr,
     load_ignored_sample_ids, reference_split_audit,
 )
+from mscloudr.data.sen12mscr_splits import sample_group_key
 from mscloudr.models.source_guided_dbcr import SourceGuidedDBCRNet
 from mscloudr.reproducibility import seed_everything
 from mscloudr.sar_sensitivity import (
     SFBlockSnapshot, extend_sample_measurements,
-    per_sample_l1, rotate_other_sample_indices, summarize_samples, tensor_change,
+    paired_reconstruction_statistics, per_sample_l1, rotate_other_sample_indices,
+    summarize_samples, tensor_change,
 )
 
 
@@ -105,8 +107,10 @@ def run(args: argparse.Namespace) -> dict:
         raise ValueError("validation split fingerprint differs from checkpoint")
     indices = evenly_spaced_indices(len(datasets.val), args.num_samples)
     selected_ids = [datasets.val.samples[i].sample_id for i in indices]
+    roi_groups = [sample_group_key(datasets.val.samples[i]) for i in indices]
     permutation = rotate_other_sample_indices(args.num_samples)
     shuffled_source_ids = [selected_ids[j] for j in permutation]
+    shuffled_roi_groups = [roi_groups[j] for j in permutation]
     # The permutation is across all selected samples, not within minibatches.
     # Preload only the selected SAR images (as normalized tensors) on CPU.
     sar_pool = torch.stack([datasets.val[i]["sar"] for i in indices], dim=0)
@@ -164,7 +168,9 @@ def run(args: argparse.Namespace) -> dict:
             batch_sample_rows = [
                 {
                     "sample_id": selected_ids[seen + i],
+                    "roi_group": roi_groups[seen + i],
                     "shuffled_sar_source_id": shuffled_source_ids[seen + i],
+                    "shuffled_sar_source_roi_group": shuffled_roi_groups[seen + i],
                     "normal_l1": float(reference_l1[i].item()),
                 } for i in range(size)
             ]
@@ -201,15 +207,28 @@ def run(args: argparse.Namespace) -> dict:
                     row[name.lower() + "_prediction_delta_l1"] = float(
                         delta["l1"][i].item()
                     )
+                    row[name.lower() + "_minus_normal_l1"] = (
+                        float(l1[i].item()) - row["normal_l1"]
+                    )
             per_sample.extend(batch_sample_rows)
             seen += size
             print(f"processed={seen}/{args.num_samples}", flush=True)
 
     if seen != args.num_samples:
         raise RuntimeError("processed sample count mismatch")
+    paired = paired_reconstruction_statistics(
+        conditions["NORMAL"]["reconstruction_l1"],
+        conditions["SHUFFLED"]["reconstruction_l1"],
+        roi_groups,
+    )
+    paired["shuffled_sar_source_same_roi_fraction"] = (
+        sum(source == target for source, target in zip(
+            shuffled_roi_groups, roi_groups
+        )) / seen
+    )
 
     result = {
-        "diagnostic": "dbcr_sfblock_sar_sensitivity_v1",
+        "diagnostic": "dbcr_sfblock_sar_sensitivity_paired_v2",
         "inference": "endpoint_direct_x0_t_equals_T",
         "checkpoint": str(args.checkpoint),
         "checkpoint_epoch": int(payload["epoch"]),
@@ -222,7 +241,9 @@ def run(args: argparse.Namespace) -> dict:
         "selection": "deterministic_evenly_spaced_validation_indices",
         "selection_indices": indices,
         "selected_sample_ids": selected_ids,
+        "selected_roi_groups": roi_groups,
         "shuffled_sar_source_ids": shuffled_source_ids,
+        "shuffled_sar_source_roi_groups": shuffled_roi_groups,
         "intervention_definitions": {
             "NORMAL": "correctly paired normalized SAR",
             "SHUFFLED": "cyclic permutation of selected validation SAR pool; no self-pairs",
@@ -241,6 +262,7 @@ def run(args: argparse.Namespace) -> dict:
             for name, by_stage in fusion.items()
         },
         "per_sample": per_sample,
+        "paired_normal_vs_shuffled": paired,
         "interpretation": (
             "SAR interventions are out-of-distribution perturbations; output "
             "differences measure sensitivity, not necessarily beneficial or "
@@ -257,7 +279,7 @@ def run(args: argparse.Namespace) -> dict:
         )
         output = (
             run_dir / "diagnostics" /
-            f"sar_sensitivity_epoch{payload['epoch']:03d}.json"
+            f"sar_sensitivity_paired_epoch{payload['epoch']:03d}_n{seen:04d}.json"
         )
     eval_base._write_json_atomic(output, result, overwrite=args.overwrite)
 
@@ -273,6 +295,30 @@ def run(args: argparse.Namespace) -> dict:
             f"{values.get('reconstruction_l1_delta_vs_normal_mean', 0.0):>12.6f} "
             f"{values.get('prediction_delta_relative_l2_mean', 0.0):>14.6f}"
         )
+    print("\nPaired SHUFFLED - NORMAL reconstruction L1 (positive favors NORMAL)")
+    print(
+        f"Mean delta: {paired['mean_delta_l1']:+.6f}; "
+        f"median: {paired['median_delta_l1']:+.6f}; "
+        f"relative increase: {paired['relative_increase_pct']:.2f}%"
+    )
+    print(
+        f"NORMAL better: {paired['normal_better_count']}/{seen}; "
+        f"SHUFFLED better: {paired['shuffled_better_count']}/{seen}; "
+        f"ties: {paired['tie_count']}; "
+        f"ROI groups represented: {paired['num_roi_groups']}"
+    )
+    print(
+        f"95% patch bootstrap interval: {paired['patch_bootstrap_95ci']}; "
+        f"95% ROI-cluster interval: {paired['roi_cluster_bootstrap_95ci']}"
+    )
+    print(
+        "SHUFFLED SAR from same ROI as target: "
+        f"{100.0 * paired['shuffled_sar_source_same_roi_fraction']:.1f}%"
+    )
+    print(
+        "Caution: ROI-cluster intervals with few groups and one shuffled "
+        "permutation are descriptive, not definitive significance tests."
+    )
     for name, stages in result["sfblock_changes_vs_normal"].items():
         print(f"\n{name}: SFBlock output change relative to NORMAL")
         print(
