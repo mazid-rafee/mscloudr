@@ -30,6 +30,7 @@ from .patent_blocks import (
     PatentTimeEmbeddedNAFBlock,
     PatentTimeEmbedding,
     PatentTimeEmbeddingConfig,
+    SCALE_SHIFT_MODES,
     sine_bridge_alpha,
 )
 
@@ -50,6 +51,7 @@ class SourceGuidedDBCRConfig:
         default_factory=PatentTimeEmbeddingConfig
     )
     time_sharing: str = "per_block"
+    scale_shift_mode: str = "patent"
     separate_modality_downsamplers: bool = True
     stem_kernel_size: int = 1
     output_kernel_size: int = 3
@@ -75,6 +77,8 @@ class SourceGuidedDBCRConfig:
             raise ValueError("total_steps must be positive")
         if self.time_sharing not in TIME_SHARING_MODES:
             raise ValueError("time_sharing must be per_block or per_width")
+        if self.scale_shift_mode not in SCALE_SHIFT_MODES:
+            raise ValueError(f"scale_shift_mode must be one of {SCALE_SHIFT_MODES}")
         if self.stem_kernel_size not in (1, 3) or self.output_kernel_size not in (1, 3):
             raise ValueError("stem/output kernel sizes must be 1 or 3")
         self.time_embedding.validate()
@@ -116,6 +120,7 @@ class SourceGuidedDBCRNet(nn.Module):
                     width,
                     time_config=cfg.time_embedding,
                     own_time_embedding=(cfg.time_sharing == "per_block"),
+                    scale_shift_mode=cfg.scale_shift_mode,
                 )
                 for _ in range(count)
             ])
@@ -268,6 +273,10 @@ class SourceGuidedDBCRNet(nn.Module):
                 for branch in (self.opt_encoders, self.sar_encoders)
             ) + len(self.bottleneck) + sum(map(len, self.decoders)),
             "time_conditioning": "sinusoidal(alpha_t)->3 linear + 2 SimpleGate->4 scale_shift",
+            "scale_shift_equation": (
+                "x*scale+shift" if self.config.scale_shift_mode == "patent"
+                else "x*(1+scale)+shift"
+            ),
             "time_conditioning_branches": "optical_encoder+sar_encoder+optical_decoder+bottleneck",
             "normalization": "patent_whole_feature_map_layernorm_in_NAF;paper_layernorm2d_in_SF",
             "sfblock": "paper_audited_cross_modal_channel_attention",
