@@ -25,7 +25,10 @@ from mscloudr.models.source_guided_dbcr import (
     SourceGuidedDBCRConfig,
     SourceGuidedDBCRNet,
 )
-from mscloudr.models.patent_blocks import PatentTimeEmbeddingConfig
+from mscloudr.models.patent_blocks import (
+    PatentTimeEmbeddingConfig,
+    SCALE_SHIFT_MODES,
+)
 from mscloudr.reproducibility import (
     SeedConfig,
     make_torch_generator,
@@ -52,6 +55,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="per_block",
         help="Explicit assumption; not specified by DB-CR paper/patent.",
     )
+    parser.add_argument(
+        "--scale-shift-mode",
+        choices=SCALE_SHIFT_MODES,
+        default="patent",
+        help=(
+            "patent: x*scale+shift (source-guided default); "
+            "identity_centered: x*(1+scale)+shift (experimental ablation)"
+        ),
+    )
     parser.add_argument("--positional-dim", type=int, default=128)
     parser.add_argument("--hidden-dim", type=int, default=128)
     return parser
@@ -61,6 +73,7 @@ def _architecture(args) -> SourceGuidedDBCRConfig:
     cfg = SourceGuidedDBCRConfig(
         total_steps=args.total_steps,
         time_sharing=args.time_sharing,
+        scale_shift_mode=args.scale_shift_mode,
         time_embedding=PatentTimeEmbeddingConfig(
             positional_dim=args.positional_dim,
             hidden_dim=args.hidden_dim,
@@ -144,7 +157,12 @@ def run(args: argparse.Namespace):
         "architecture_audit": architecture_audit,
         "schedule_name": "original",
         "conditioning_mode": RAW_T_CONDITIONING,
-        "conditioning_identity": "patent_alpha_sine_scale_shift_per_nafblock",
+        "conditioning_identity": (
+            "patent_alpha_sine_scale_shift_per_nafblock"
+            if cfg.scale_shift_mode == "patent"
+            else "experimental_identity_centered_alpha_sine_scale_shift_per_nafblock"
+        ),
+        "experiment_variant": cfg.scale_shift_mode,
         "bridge_geometry": "straight_linear",
         "bridge_state_definition": "x_t=(1-alpha_t)*x0+alpha_t*y",
         "bridge_alpha_definition": "alpha_t=sin(pi*t/(2*T))",
