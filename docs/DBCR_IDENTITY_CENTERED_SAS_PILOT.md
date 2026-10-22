@@ -25,11 +25,11 @@ implementation. The default continues to use the patent equation.
 
 From the existing mscloudr-dbcr-source-guided worktree:
 
-    git fetch origin exp/dbcr-identity-centered-sas-pilot
-    git worktree add ../mscloudr-dbcr-identity-sas exp/dbcr-identity-centered-sas-pilot
+    git fetch origin
+    git worktree add -b exp/dbcr-identity-centered-sas-pilot ../mscloudr-dbcr-identity-sas origin/exp/dbcr-identity-centered-sas-pilot
     cd ../mscloudr-dbcr-identity-sas
     export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
-    python -m pytest tests/test_dbcr_identity_centered_sas.py -q
+    python -m pytest tests/test_dbcr_identity_centered_sas.py tests/test_patent_blocks.py tests/test_source_guided_dbcr.py -q
 
 Check unused GPU 0 first:
 
