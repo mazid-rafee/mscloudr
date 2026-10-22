@@ -13,8 +13,6 @@ Example:
 from __future__ import annotations
 
 import argparse
-import json
-import math
 from pathlib import Path
 
 import torch
@@ -136,9 +134,11 @@ def run(args: argparse.Namespace) -> dict:
         "num_time_conditioned_nafblocks"
     ]:
         raise RuntimeError("not all patent NAFBlocks were recorded")
+    if summary["num_fusion_blocks"] != len(model.fusion_blocks):
+        raise RuntimeError("not all SFBlocks were recorded")
 
     result = {
-        "diagnostic": "source_guided_dbcr_residual_contributions_v1",
+        "diagnostic": "source_guided_dbcr_feature_magnitudes_v2",
         "inference": "endpoint_xT_equals_cloudy_t_equals_T",
         "checkpoint": str(args.checkpoint),
         "checkpoint_epoch": int(payload.get("epoch", -1)),
@@ -159,23 +159,52 @@ def run(args: argparse.Namespace) -> dict:
         run_dir = checkpoint_dir.parent if checkpoint_dir.name == "checkpoints" else checkpoint_dir
         output = (
             run_dir / "diagnostics" /
-            f"residual_contributions_epoch{payload['epoch']:03d}.json"
+            f"feature_magnitudes_epoch{payload['epoch']:03d}.json"
         )
     eval_base._write_json_atomic(output, result, overwrite=args.overwrite)
     print(f"Checkpoint epoch: {payload['epoch']}")
     print(f"Validation samples: {summary['num_samples']} (fixed, spread across split)")
     print(f"Saved diagnostic: {output}")
+    print("\nNAFBlocks: relative residual and absolute input/change L2")
     print(
-        f"{'Stage':<20} {'Blocks':>6} {'MBConv rel-L2':>14} "
-        f"{'FFN rel-L2':>14} {'Total rel-L2':>14}"
+        f"{'Stage':<18} {'N':>3} {'MB rel':>9} {'FFN rel':>9} "
+        f"{'Total rel':>10} {'Input L2':>11} {'Change L2':>11}"
     )
     for stage, stats in sorted(summary["stages"].items()):
         print(
-            f"{stage:<20} {stats['num_blocks']:>6} "
-            f"{stats['mbconv_relative_l2_mean']:>14.6f} "
-            f"{stats['ffn_relative_l2_mean']:>14.6f} "
-            f"{stats['total_relative_l2_mean']:>14.6f}"
+            f"{stage:<18} {stats['num_blocks']:>3} "
+            f"{stats['mbconv_relative_l2_mean']:>9.5f} "
+            f"{stats['ffn_relative_l2_mean']:>9.5f} "
+            f"{stats['total_relative_l2_mean']:>10.5f} "
+            f"{stats['input_l2_mean']:>11.4f} "
+            f"{stats['total_update_l2_mean']:>11.4f}"
         )
+    print("\nNAFBlocks: per-element RMS (comparable across resolutions)")
+    print(
+        f"{'Stage':<18} {'Input':>11} {'MB update':>11} "
+        f"{'FFN update':>11} {'Total update':>13}"
+    )
+    for stage, stats in sorted(summary["stages"].items()):
+        print(
+            f"{stage:<18} {stats['input_rms_mean']:>11.6f} "
+            f"{stats['mbconv_update_rms_mean']:>11.6f} "
+            f"{stats['ffn_update_rms_mean']:>11.6f} "
+            f"{stats['total_update_rms_mean']:>13.6f}"
+        )
+    print("\nSFBlocks: fusion output relative to optical input")
+    print(
+        f"{'Block':<18} {'Opt RMS':>11} {'SAR RMS':>11} "
+        f"{'Out RMS':>11} {'Change RMS':>11} {'Change/Opt':>11}"
+    )
+    for name, stats in sorted(summary["fusion_blocks"].items()):
+        print(
+            f"{name:<18} {stats['optical_input_rms_mean']:>11.6f} "
+            f"{stats['sar_input_rms_mean']:>11.6f} "
+            f"{stats['output_rms_mean']:>11.6f} "
+            f"{stats['output_minus_optical_rms_mean']:>11.6f} "
+            f"{stats['output_minus_optical_relative_l2_mean']:>11.6f}"
+        )
+    print("\nNote: SFBlock output change is not isolated SAR influence.")
     return result
 
 
