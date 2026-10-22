@@ -24,11 +24,9 @@ from mscloudr.models.source_guided_dbcr import (
     SOURCE_GUIDED_DBCR_IDENTITY,
     SourceGuidedDBCRConfig,
     SourceGuidedDBCRNet,
+    SOURCE_GUIDED_SCALE_SHIFT_MODES,
 )
-from mscloudr.models.patent_blocks import (
-    PatentTimeEmbeddingConfig,
-    SCALE_SHIFT_MODES,
-)
+from mscloudr.models.patent_blocks import PatentTimeEmbeddingConfig
 from mscloudr.reproducibility import (
     SeedConfig,
     make_torch_generator,
@@ -57,11 +55,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--scale-shift-mode",
-        choices=SCALE_SHIFT_MODES,
+        choices=SOURCE_GUIDED_SCALE_SHIFT_MODES,
         default="patent",
         help=(
             "patent: x*scale+shift (source-guided default); "
-            "identity_centered: x*(1+scale)+shift (experimental ablation)"
+            "identity_centered: x*(1+scale)+shift everywhere; "
+            "encoder_only_identity_centered: identity-centered ONLY in optical "
+            "and SAR encoders; patent modulation in bottleneck and decoders"
         ),
     )
     parser.add_argument("--positional-dim", type=int, default=128)
@@ -157,11 +157,15 @@ def run(args: argparse.Namespace):
         "architecture_audit": architecture_audit,
         "schedule_name": "original",
         "conditioning_mode": RAW_T_CONDITIONING,
-        "conditioning_identity": (
-            "patent_alpha_sine_scale_shift_per_nafblock"
-            if cfg.scale_shift_mode == "patent"
-            else "experimental_identity_centered_alpha_sine_scale_shift_per_nafblock"
-        ),
+        "conditioning_identity": {
+            "patent": "patent_alpha_sine_scale_shift_per_nafblock",
+            "identity_centered": (
+                "experimental_identity_centered_alpha_sine_scale_shift_per_nafblock"
+            ),
+            "encoder_only_identity_centered": (
+                "experimental_encoder_only_identity_centered_alpha_sine_scale_shift"
+            ),
+        }[cfg.scale_shift_mode],
         "experiment_variant": cfg.scale_shift_mode,
         "bridge_geometry": "straight_linear",
         "bridge_state_definition": "x_t=(1-alpha_t)*x0+alpha_t*y",
