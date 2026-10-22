@@ -36,6 +36,12 @@ from .patent_blocks import (
 
 SOURCE_GUIDED_DBCR_IDENTITY = "dbcr_source_guided_v1"
 TIME_SHARING_MODES = ("per_block", "per_width")
+# Third mode changes ONLY optical/SAR encoders, keeping patent SaS in the
+# bottleneck and all decoder blocks. Individual NAFBlocks still accept only
+# the two primitive equations from patent_blocks.SCALE_SHIFT_MODES.
+SOURCE_GUIDED_SCALE_SHIFT_MODES = (
+    *SCALE_SHIFT_MODES, "encoder_only_identity_centered",
+)
 
 
 @dataclass(frozen=True)
@@ -77,8 +83,10 @@ class SourceGuidedDBCRConfig:
             raise ValueError("total_steps must be positive")
         if self.time_sharing not in TIME_SHARING_MODES:
             raise ValueError("time_sharing must be per_block or per_width")
-        if self.scale_shift_mode not in SCALE_SHIFT_MODES:
-            raise ValueError(f"scale_shift_mode must be one of {SCALE_SHIFT_MODES}")
+        if self.scale_shift_mode not in SOURCE_GUIDED_SCALE_SHIFT_MODES:
+            raise ValueError(
+                f"scale_shift_mode must be one of {SOURCE_GUIDED_SCALE_SHIFT_MODES}"
+            )
         if self.stem_kernel_size not in (1, 3) or self.output_kernel_size not in (1, 3):
             raise ValueError("stem/output kernel sizes must be 1 or 3")
         self.time_embedding.validate()
@@ -114,13 +122,19 @@ class SourceGuidedDBCRNet(nn.Module):
             else None
         )
 
-        def blocks(width: int, count: int) -> nn.ModuleList:
+        def blocks(
+            width: int, count: int, *, encoder: bool = False
+        ) -> nn.ModuleList:
+            if cfg.scale_shift_mode == "encoder_only_identity_centered":
+                primitive_mode = "identity_centered" if encoder else "patent"
+            else:
+                primitive_mode = cfg.scale_shift_mode
             return nn.ModuleList([
                 PatentTimeEmbeddedNAFBlock(
                     width,
                     time_config=cfg.time_embedding,
                     own_time_embedding=(cfg.time_sharing == "per_block"),
-                    scale_shift_mode=cfg.scale_shift_mode,
+                    scale_shift_mode=primitive_mode,
                 )
                 for _ in range(count)
             ])
@@ -134,11 +148,11 @@ class SourceGuidedDBCRNet(nn.Module):
             padding=cfg.stem_kernel_size // 2,
         )
         self.opt_encoders = nn.ModuleList([
-            blocks(width, count)
+            blocks(width, count, encoder=True)
             for width, count in zip(widths, cfg.encoder_blocks)
         ])
         self.sar_encoders = nn.ModuleList([
-            blocks(width, count)
+            blocks(width, count, encoder=True)
             for width, count in zip(widths, cfg.encoder_blocks)
         ])
         self.fusion_blocks = nn.ModuleList([
@@ -274,9 +288,18 @@ class SourceGuidedDBCRNet(nn.Module):
             ) + len(self.bottleneck) + sum(map(len, self.decoders)),
             "time_conditioning": "sinusoidal(alpha_t)->3 linear + 2 SimpleGate->4 scale_shift",
             "scale_shift_equation": (
-                "x*scale+shift" if self.config.scale_shift_mode == "patent"
+                "x*scale+shift"
+                if self.config.scale_shift_mode == "patent"
                 else "x*(1+scale)+shift"
+                if self.config.scale_shift_mode == "identity_centered"
+                else "encoder=x*(1+scale)+shift; bottleneck/decoder=x*scale+shift"
             ),
+            "scale_shift_modes_by_component": {
+                "optical_encoder": self.opt_encoders[0][0].scale_shift_mode,
+                "sar_encoder": self.sar_encoders[0][0].scale_shift_mode,
+                "bottleneck": self.bottleneck[0].scale_shift_mode,
+                "decoder": self.decoders[0][0].scale_shift_mode,
+            },
             "time_conditioning_branches": "optical_encoder+sar_encoder+optical_decoder+bottleneck",
             "normalization": "patent_whole_feature_map_layernorm_in_NAF;paper_layernorm2d_in_SF",
             "sfblock": "paper_audited_cross_modal_channel_attention",
