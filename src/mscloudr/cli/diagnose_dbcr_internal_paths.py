@@ -184,6 +184,23 @@ def run(args: argparse.Namespace) -> dict:
             f"{val('sca.weight_grad_rms_mean'):>11} "
             f"{val('time_embedding.linear3.weight_grad_rms_mean'):>11}"
         )
+    print("\nDeep 28-block encoder input-gradient RMS (first / middle / last)")
+    for stem in ("opt_encoders.3", "sar_encoders.3"):
+        members = sorted(
+            (
+                (int(key.split(".")[-1]), record)
+                for key, record in summary["blocks"].items()
+                if key.startswith(stem + ".")
+            ),
+            key=lambda x: x[0],
+        )
+        if len(members) > 1:
+            positions = sorted(set((0, len(members) // 2, len(members) - 1)))
+            pairs = [
+                f"block{members[i][0]}={members[i][1]['input_grad_rms_mean']:.3e}"
+                for i in positions
+            ]
+            print(f"{stem}: " + "  ".join(pairs))
     print("\nNote: measurements are read-only; no optimizer steps taken.")
     print("Full per-block and FFN/shift diagnostics are in the JSON report.")
     return result
