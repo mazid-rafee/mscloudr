@@ -56,6 +56,8 @@ def _checkpoint_config(metadata: dict) -> SourceGuidedDBCRConfig:
             hidden_dim=int(time["hidden_dim"]),
         ),
         time_sharing=raw["time_sharing"],
+        # Old source-guided checkpoints predate this explicit field.
+        scale_shift_mode=raw.get("scale_shift_mode", "patent"),
         separate_modality_downsamplers=bool(raw["separate_modality_downsamplers"]),
         stem_kernel_size=int(raw["stem_kernel_size"]),
         output_kernel_size=int(raw["output_kernel_size"]),
