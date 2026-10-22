@@ -11,6 +11,7 @@ from mscloudr.models.source_guided_dbcr import SourceGuidedDBCRConfig, SourceGui
 from mscloudr.sar_sensitivity import (
     SFBlockSnapshot, per_sample_l1, per_sample_rms,
     rotate_other_sample_indices, summarize_samples, tensor_change,
+    paired_reconstruction_statistics,
 )
 
 
@@ -107,3 +108,50 @@ def test_fixed_validation_selection_and_aggregator():
     }
     with pytest.raises(ValueError):
         summarize_samples({"x": [1.], "y": [2., 3.]})
+
+
+
+def test_paired_analysis_improvement_and_roi_uncertainty_deterministic():
+    normal = [0.02, 0.03, 0.04, 0.05, 0.06, 0.07]
+    shuffled = [0.023, 0.032, 0.045, 0.047, 0.065, 0.077]
+    roi_groups = ["roi_a", "roi_a", "roi_b", "roi_b", "roi_c", "roi_c"]
+    results = paired_reconstruction_statistics(
+        normal, shuffled, roi_groups,
+        bootstrap_seed=42, bootstrap_repetitions=200,
+    )
+    again = paired_reconstruction_statistics(
+        normal, shuffled, roi_groups,
+        bootstrap_seed=42, bootstrap_repetitions=200,
+    )
+    assert results == again
+    assert results["num_samples"] == 6
+    assert results["num_roi_groups"] == 3
+    assert results["normal_better_count"] == 5
+    assert results["shuffled_better_count"] == 1
+    assert results["tie_count"] == 0
+    assert results["fraction_normal_better"] == pytest.approx(5 / 6)
+    assert results["mean_delta_l1"] == pytest.approx(0.019 / 6)
+    assert results["roi_group_sample_counts"] == {
+        "roi_a": 2, "roi_b": 2, "roi_c": 2
+    }
+    assert results["roi_groups_favoring_normal"] == 3
+    for key in ("patch_bootstrap_95ci", "roi_cluster_bootstrap_95ci"):
+        lower, upper = results[key]
+        assert lower <= results["mean_delta_l1"] <= upper
+
+
+def test_paired_analysis_rejects_bad_alignment_and_works_with_single_roi():
+    with pytest.raises(ValueError):
+        paired_reconstruction_statistics([.1, .2], [.2], ["a", "b"])
+    with pytest.raises(ValueError):
+        paired_reconstruction_statistics([.1, .2], [.2, .3], ["a", ""])
+    with pytest.raises(ValueError):
+        paired_reconstruction_statistics(
+            [.1, float("nan")], [.2, .3], ["a", "a"]
+        )
+    result = paired_reconstruction_statistics(
+        [.1, .2], [.2, .3], ["one", "one"], bootstrap_repetitions=100
+    )
+    assert result["num_roi_groups"] == 1
+    assert result["mean_delta_l1"] == pytest.approx(.1)
+    assert result["roi_cluster_bootstrap_95ci"] == pytest.approx([.1, .1])
