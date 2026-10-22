@@ -53,3 +53,36 @@ epoch stability is necessary. Results refuse overwrite by default.
 If stage residual ratios are orders of magnitude smaller than others,
 investigate branch activations and gradients next. Small beta/gamma values
 or small update norms alone are insufficient to prove an architectural bug.
+
+## V2: absolute activations, residual updates, and SFBlock changes
+
+The same CLI now additionally reports:
+
+- NAFBlock input, post-MBConv and output raw L2 norms.
+- Absolute MBConv, FFN and combined update L2 norms.
+- Per-feature RMS for inputs and updates (L2/sqrt(C*H*W)), so
+  different image resolutions can be compared in a scale-normalized way.
+- SFBlock optical input, SAR input and fusion output norms, plus
+  fusion-output-minus-optical-input L2, RMS and relative L2.
+
+The stage summary averages per-block means, whereas the
+fusion_blocks records identify all four distinct SFBlock levels.
+
+SFBlock output change is **not isolated SAR causal influence**, since
+the SFBlock transforms the optical input and applies a learned
+projection even without changing its SAR input.
+
+Re-run the documented diagnostic command after fetching the updated
+branch. V2 output is written to
+
+    diagnostics/feature_magnitudes_epochNNN.json
+
+so the earlier residual_contributions_epochNNN.json remains intact.
+Existing relative norm fields are preserved for comparisons.
+
+Tests:
+
+    python -m pytest tests/test_dbcr_residual_diagnostics.py -q
+
+No train/model/optimizer definitions are changed; do not restart
+the ongoing GPU 7 training. Use a free GPU for read-only inference.
