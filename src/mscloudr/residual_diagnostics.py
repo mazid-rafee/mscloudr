@@ -18,10 +18,36 @@ from __future__ import annotations
 
 from collections import defaultdict
 from contextlib import contextmanager
+import math
 
 import torch
 
+from mscloudr.models.blocks import SFBlock
 from mscloudr.models.patent_blocks import PatentTimeEmbeddedNAFBlock
+
+NAF_EXTRA_KEYS = (
+    "input_l2", "post_mbconv_l2", "output_l2",
+    "mbconv_update_l2", "ffn_update_l2", "total_update_l2",
+    "input_rms", "mbconv_update_rms", "ffn_update_rms", "total_update_rms",
+)
+FUSION_KEYS = (
+    "optical_input_l2", "sar_input_l2", "output_l2", "output_minus_optical_l2",
+    "optical_input_rms", "sar_input_rms", "output_rms",
+    "output_minus_optical_rms", "output_minus_optical_relative_l2",
+)
+
+
+def _rms_per_sample(tensor: torch.Tensor) -> torch.Tensor:
+    """L2 divided by sqrt(C*H*W), comparable across feature resolutions."""
+    return _norm_per_sample(tensor) / math.sqrt(tensor[0].numel())
+
+
+def _append_values(observations: dict, measures: dict) -> None:
+    for key, tensor in measures.items():
+        observations[key].extend(
+            float(value) for value in tensor.detach().cpu().tolist()
+        )
+
 
 
 def _norm_per_sample(tensor: torch.Tensor) -> torch.Tensor:
@@ -62,10 +88,22 @@ class ResidualContributionRecorder:
         }
         if not self.blocks:
             raise ValueError("no PatentTimeEmbeddedNAFBlocks found")
+        self.fusions: dict[str, SFBlock] = {
+            name: module
+            for name, module in model.named_modules()
+            if isinstance(module, SFBlock)
+        }
         self._handles: list = []
         self._active: dict[str, dict[str, torch.Tensor]] = {}
+        self._fusion_active: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
         self._observations = defaultdict(
-            lambda: {"mbconv": [], "ffn": [], "total": []}
+            lambda: {
+                key: []
+                for key in ("mbconv", "ffn", "total", *NAF_EXTRA_KEYS)
+            }
+        )
+        self._fusion_observations = defaultdict(
+            lambda: {key: [] for key in FUSION_KEYS}
         )
 
     def _on_enter(self, name: str, inputs: tuple) -> None:
@@ -82,19 +120,60 @@ class ResidualContributionRecorder:
         state = self._active.pop(name)
         if "z" not in state:
             raise RuntimeError(f"missing MBConv/FFN boundary for block {name}")
-        ratios = relative_residual_norms(state["x"], state["z"], output)
-        for key, vec in zip(("mbconv", "ffn", "total"), ratios):
-            self._observations[name][key].extend(
-                float(value) for value in vec.detach().cpu().tolist()
-            )
+        x, z, y = state["x"], state["z"], output
+        ratios = relative_residual_norms(x, z, y)
+        mb_delta = z.float() - x.float()
+        ffn_delta = y.float() - z.float()
+        total_delta = y.float() - x.float()
+        measures = {
+            **dict(zip(("mbconv", "ffn", "total"), ratios)),
+            "input_l2": _norm_per_sample(x),
+            "post_mbconv_l2": _norm_per_sample(z),
+            "output_l2": _norm_per_sample(y),
+            "mbconv_update_l2": _norm_per_sample(mb_delta),
+            "ffn_update_l2": _norm_per_sample(ffn_delta),
+            "total_update_l2": _norm_per_sample(total_delta),
+            "input_rms": _rms_per_sample(x),
+            "mbconv_update_rms": _rms_per_sample(mb_delta),
+            "ffn_update_rms": _rms_per_sample(ffn_delta),
+            "total_update_rms": _rms_per_sample(total_delta),
+        }
+        _append_values(self._observations[name], measures)
+
+    def _fusion_enter(self, name: str, inputs: tuple) -> None:
+        if name in self._fusion_active:
+            raise RuntimeError(f"SFBlock was re-entered: {name}")
+        if len(inputs) != 2 or inputs[0].shape != inputs[1].shape:
+            raise ValueError(f"invalid fusion inputs for {name}")
+        self._fusion_active[name] = (inputs[0], inputs[1])
+
+    def _fusion_exit(self, name: str, output: torch.Tensor) -> None:
+        optical, sar = self._fusion_active.pop(name)
+        if output.shape != optical.shape:
+            raise ValueError(f"invalid fusion output for {name}")
+        delta = output.float() - optical.float()
+        optical_l2 = _norm_per_sample(optical)
+        measures = {
+            "optical_input_l2": optical_l2,
+            "sar_input_l2": _norm_per_sample(sar),
+            "output_l2": _norm_per_sample(output),
+            "output_minus_optical_l2": _norm_per_sample(delta),
+            "optical_input_rms": _rms_per_sample(optical),
+            "sar_input_rms": _rms_per_sample(sar),
+            "output_rms": _rms_per_sample(output),
+            "output_minus_optical_rms": _rms_per_sample(delta),
+            "output_minus_optical_relative_l2":
+                _norm_per_sample(delta) / (optical_l2 + 1e-12),
+        }
+        _append_values(self._fusion_observations[name], measures)
 
     @contextmanager
     def capture(self):
         """Attach to model only during inference and ALWAYS clean up hooks."""
         if self._handles:
             raise RuntimeError("residual hooks already installed")
-        if self._active:
-            raise RuntimeError("previous block observation still pending")
+        if self._active or self._fusion_active:
+            raise RuntimeError("previous block/fusion observation still pending")
         try:
             for name, block in self.blocks.items():
                 self._handles.append(
@@ -112,25 +191,47 @@ class ResidualContributionRecorder:
                         lambda m, a, output, name=name: self._on_exit(name, output)
                     )
                 )
+            for name, fusion in self.fusions.items():
+                self._handles.append(
+                    fusion.register_forward_pre_hook(
+                        lambda m, a, name=name: self._fusion_enter(name, a)
+                    )
+                )
+                self._handles.append(
+                    fusion.register_forward_hook(
+                        lambda m, a, output, name=name: self._fusion_exit(name, output)
+                    )
+                )
             yield self
-            if self._active:
+            if self._active or self._fusion_active:
                 raise RuntimeError(
-                    f"unfinished residual hooks: {sorted(self._active)}"
+                    "unfinished hooks: "
+                    f"NAF={sorted(self._active)}, fusion={sorted(self._fusion_active)}"
                 )
         finally:
             for handle in self._handles:
                 handle.remove()
             self._handles.clear()
             self._active.clear()
+            self._fusion_active.clear()
 
     def summary(self) -> dict:
         if set(self._observations) != set(self.blocks):
             missing = sorted(set(self.blocks) - set(self._observations))
             raise RuntimeError(f"not all NAFBlocks executed: {missing}")
         sizes = {
-            len(stats["mbconv"])
+            len(values)
             for stats in self._observations.values()
+            for values in stats.values()
         }
+        sizes.update(
+            len(values)
+            for stats in self._fusion_observations.values()
+            for values in stats.values()
+        )
+        if set(self._fusion_observations) != set(self.fusions):
+            missing = sorted(set(self.fusions) - set(self._fusion_observations))
+            raise RuntimeError(f"not all SFBlocks executed: {missing}")
         if len(sizes) != 1 or not sizes or next(iter(sizes)) <= 0:
             raise RuntimeError("residual diagnostic sample counts disagree")
         sample_count = next(iter(sizes))
@@ -149,6 +250,10 @@ class ResidualContributionRecorder:
                 "ffn_relative_l2_mean": sum(observations["ffn"]) / sample_count,
                 "total_relative_l2_mean": sum(observations["total"]) / sample_count,
             }
+            record.update({
+                key + "_mean": sum(observations[key]) / sample_count
+                for key in NAF_EXTRA_KEYS
+            })
             blocks[name] = record
             groups[group].append(record)
 
@@ -156,6 +261,7 @@ class ResidualContributionRecorder:
             "mbconv_relative_l2_mean",
             "ffn_relative_l2_mean",
             "total_relative_l2_mean",
+            *(key + "_mean" for key in NAF_EXTRA_KEYS),
         )
         stage_summary = {}
         for group, entries in sorted(groups.items()):
@@ -171,15 +277,28 @@ class ResidualContributionRecorder:
                 summary[key.replace("_mean", "_max_block_mean")] = max(vals)
             stage_summary[group] = summary
 
+        fusion_summary = {}
+        for name, observations in sorted(self._fusion_observations.items()):
+            fusion_summary[name] = {
+                key + "_mean": sum(observations[key]) / sample_count
+                for key in FUSION_KEYS
+            }
         return {
             "num_samples": sample_count,
             "num_blocks": len(blocks),
+            "num_fusion_blocks": len(fusion_summary),
             "normalization": {
                 "mbconv_relative_l2": "||z-x||_2/(||x||_2+1e-12)",
                 "ffn_relative_l2": "||y-z||_2/(||z||_2+1e-12)",
                 "total_relative_l2": "||y-x||_2/(||x||_2+1e-12)",
-                "averaging": "mean of per-sample ratios; stage values average block means",
+                "fusion_relative_l2": "||SF(opt,sar)-opt||_2/(||opt||_2+1e-12)",
+                "raw_l2": "Euclidean norm across all C,H,W features",
+                "rms": "raw L2 divided by sqrt(C*H*W)",
+                "averaging": "mean of per-sample measurements; stage values average block means",
+                "fusion_note": "Fusion output change is not the isolated SAR contribution. "
+                               "SFBlock has projection and optical paths.",
             },
             "stages": stage_summary,
             "blocks": blocks,
+            "fusion_blocks": fusion_summary,
         }
