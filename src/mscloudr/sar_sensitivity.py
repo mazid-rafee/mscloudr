@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import math
+import random
+from statistics import median
 
 import torch
 
@@ -138,4 +140,114 @@ def summarize_samples(data: dict[str, list[float]]) -> dict[str, float]:
     return {
         name + "_mean": sum(values) / len(values)
         for name, values in data.items()
+    }
+
+
+
+def paired_reconstruction_statistics(
+    normal_l1: list[float],
+    shuffled_l1: list[float],
+    roi_groups: list[str],
+    *,
+    bootstrap_seed: int = 42,
+    bootstrap_repetitions: int = 2000,
+) -> dict:
+    """Paired SHUFFLED-minus-NORMAL L1 with deterministic uncertainty estimates.
+
+    Positive delta indicates correctly paired SAR has lower reconstruction L1.
+    The patch bootstrap assumes independent patches; the ROI-cluster bootstrap
+    resamples all patches of a region together to reflect spatial dependence.
+    Both are descriptive for this fixed subset and *single* SAR permutation.
+    """
+    n = len(normal_l1)
+    if n < 2 or len(shuffled_l1) != n or len(roi_groups) != n:
+        raise ValueError("paired analysis requires >=2 aligned samples and ROI IDs")
+    if bootstrap_repetitions < 100:
+        raise ValueError("bootstrap_repetitions must be >= 100")
+    if any(not math.isfinite(float(v)) for v in (*normal_l1, *shuffled_l1)):
+        raise ValueError("L1 values must be finite")
+    if any(not isinstance(group, str) or not group for group in roi_groups):
+        raise ValueError("ROI groups must be nonempty strings")
+
+    deltas = [
+        float(shuffled) - float(normal)
+        for normal, shuffled in zip(normal_l1, shuffled_l1)
+    ]
+    groups: dict[str, list[float]] = {}
+    for group, delta in zip(roi_groups, deltas):
+        groups.setdefault(group, []).append(delta)
+    group_names = sorted(groups)
+    rng = random.Random(bootstrap_seed)
+
+    def percentile(sorted_values: list[float], probability: float) -> float:
+        position = probability * (len(sorted_values) - 1)
+        lo = int(math.floor(position))
+        hi = int(math.ceil(position))
+        fraction = position - lo
+        return (1.0 - fraction) * sorted_values[lo] + fraction * sorted_values[hi]
+
+    def interval(values: list[float]) -> list[float]:
+        ordered = sorted(values)
+        return [percentile(ordered, 0.025), percentile(ordered, 0.975)]
+
+    # Mean of paired deltas; resample matched (NORMAL, SHUFFLED) units together.
+    sample_means = []
+    for _ in range(bootstrap_repetitions):
+        sample_means.append(
+            sum(deltas[rng.randrange(n)] for _ in range(n)) / n
+        )
+
+    # Preserve ROI-level dependence by resampling entire ROI groups as clusters.
+    # Weight by selected patch count in each resampled group.
+    cluster_means = []
+    group_sums = [sum(groups[group]) for group in group_names]
+    group_counts = [len(groups[group]) for group in group_names]
+    g = len(group_names)
+    for _ in range(bootstrap_repetitions):
+        sampled = [rng.randrange(g) for _ in range(g)]
+        numerator = sum(group_sums[index] for index in sampled)
+        denominator = sum(group_counts[index] for index in sampled)
+        cluster_means.append(numerator / denominator)
+
+    positive = sum(delta > 0 for delta in deltas)
+    negative = sum(delta < 0 for delta in deltas)
+    ties = n - positive - negative
+    mean_normal = sum(float(v) for v in normal_l1) / n
+    mean_shuffled = sum(float(v) for v in shuffled_l1) / n
+
+    return {
+        "paired_delta_definition": "shuffled_l1 - normal_l1; positive favors NORMAL",
+        "num_samples": n,
+        "num_roi_groups": g,
+        "mean_normal_l1": mean_normal,
+        "mean_shuffled_l1": mean_shuffled,
+        "mean_delta_l1": sum(deltas) / n,
+        "median_delta_l1": float(median(deltas)),
+        "relative_increase_pct": (
+            100.0 * (mean_shuffled - mean_normal) / mean_normal
+            if mean_normal > 0 else None
+        ),
+        "normal_better_count": positive,
+        "shuffled_better_count": negative,
+        "tie_count": ties,
+        "fraction_normal_better": positive / n,
+        "patch_bootstrap_95ci": interval(sample_means),
+        "roi_cluster_bootstrap_95ci": interval(cluster_means),
+        "bootstrap_repetitions": bootstrap_repetitions,
+        "bootstrap_seed": bootstrap_seed,
+        "roi_group_sample_counts": {
+            group: len(groups[group]) for group in group_names
+        },
+        "roi_group_mean_delta_l1": {
+            group: sum(groups[group]) / len(groups[group])
+            for group in group_names
+        },
+        "roi_groups_favoring_normal": sum(
+            sum(groups[group]) > 0 for group in group_names
+        ),
+        "caution": (
+            "Fixed validation subset, one deterministic SAR permutation, "
+            "and only a few spatially dependent ROI groups: these intervals "
+            "are descriptive and do not establish population-level significance."
+        ),
     }
