@@ -44,3 +44,39 @@ The ZERO-SAR condition can be out-of-distribution.
 
 The checkpoint is loaded independently; no training/model/optimizer/checkpoint
 files are changed. The CLI refuses to overwrite existing results by default.
+
+
+## Expanded paired diagnostic: 200 fixed validation samples
+
+The diagnostic now reports paired SHUFFLED-minus-NORMAL reconstruction L1
+(positive values mean NORMAL has lower reconstruction error).
+Run on the already-training experiment's latest checkpoint, or use a
+fixed checkpoint copy to compare the same epoch across repeated runs:
+
+    python -m mscloudr.cli.diagnose_dbcr_sar_sensitivity \
+      --checkpoint ../mscloudr/outputs/DBCR_SourceGuided_perblock_full_seed42/checkpoints/latest.pt \
+      --device cuda:0 \
+      --num-samples 200 \
+      --batch-size 2 \
+      --num-workers 2
+
+Additional output includes:
+- Mean and median paired L1 improvement (SHUFFLED minus NORMAL).
+- Relative change in L1, and the proportion/count of samples favoring NORMAL.
+- Deterministic 2000-replicate patch-level paired bootstrap 95% interval.
+- Deterministic 2000-replicate ROI-cluster bootstrap 95% interval, resampling
+  entire geographically distinct ROI groups rather than treating all
+  neighboring image patches as independent.
+- Counts, paired mean differences per ROI, and the fraction of shuffled
+  SAR inputs drawn from the same ROI group as their target.
+
+Since the val set contains only 10 ROI groups, even the ROI-cluster
+confidence interval is unstable and descriptive rather than definitive.
+The analysis uses only one deterministic global SAR cyclic permutation,
+so it should not be interpreted as uncertainty over possible permutations.
+
+The 200-sample output is saved separately as:
+
+    diagnostics/sar_sensitivity_paired_epochNNN_n0200.json
+
+Thus the previous 20-image report remains unchanged.
