@@ -27,6 +27,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+SCALE_SHIFT_MODES = ("patent", "identity_centered")
+
+
 def sine_bridge_alpha(
     t: torch.Tensor,
     total_steps: float | int,
@@ -291,12 +294,19 @@ class PatentTimeEmbeddedNAFBlock(nn.Module):
         *,
         time_config: PatentTimeEmbeddingConfig | None = None,
         own_time_embedding: bool = True,
+        scale_shift_mode: str = "patent",
     ) -> None:
         super().__init__()
         if channels <= 0:
             raise ValueError("channels must be positive")
+        if scale_shift_mode not in SCALE_SHIFT_MODES:
+            raise ValueError(
+                f"scale_shift_mode must be one of {SCALE_SHIFT_MODES}, "
+                f"got {scale_shift_mode!r}"
+            )
 
         self.channels = int(channels)
+        self.scale_shift_mode = scale_shift_mode
         self.time_embedding = (
             PatentTimeEmbedding(
                 self.channels,
@@ -348,13 +358,18 @@ class PatentTimeEmbeddedNAFBlock(nn.Module):
         x1, x2 = x.chunk(2, dim=1)
         return x1 * x2
 
-    @staticmethod
     def _scale_shift(
+        self,
         x: torch.Tensor,
         scale: torch.Tensor,
         shift: torch.Tensor,
     ) -> torch.Tensor:
-        return x * scale + shift
+        """Patent: x*s+b; experimental identity-centered: x*(1+s)+b."""
+        if self.scale_shift_mode == "patent":
+            return x * scale + shift
+        if self.scale_shift_mode == "identity_centered":
+            return x * (1.0 + scale) + shift
+        raise AssertionError("unexpected scale_shift_mode")
 
     def forward_with_modulation(
         self,
