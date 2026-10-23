@@ -43,8 +43,7 @@ git fetch origin
 git worktree add --detach ../mscloudr-components origin/exp/canonical-component-supervision
 cd ../mscloudr-components
 conda activate pylrt
-python -m pip install -e .
-python -m pytest -q tests/test_canonical_components.py
+PYTHONPATH="$PWD/src" python -m pytest -q tests/test_canonical_components.py
 ```
 
 Use CUBLAS_WORKSPACE_CONFIG before Python if deterministic CUDA is enabled.
@@ -54,7 +53,7 @@ Run smoke test on an idle GPU before a full run:
 export OUT="/aul/homes/mmazi007/Desktop/Source Code (Research)/mscloudr/outputs"
 export DATA="/a/bear.cs.fiu.edu./disk/bear-b/users/mmazi007/Desktop/Source Code (Research)/Cloud Removal/data/SEN12MS-CR"
 CUBLAS_WORKSPACE_CONFIG=:4096:8 CUDA_VISIBLE_DEVICES=3 \
-  python -m mscloudr.cli.train_canonical_components \
+  PYTHONPATH="$PWD/src" python -m mscloudr.cli.train_canonical_components \
   --data-root "$DATA" --output-root "$OUT" \
   --run-name CanonicalComp_mrInverse_seed42_smoke \
   --epochs 1 --smoke-run --smoke-train-batches 2 --smoke-val-batches 2 \
@@ -81,7 +80,7 @@ After the successful run, evaluate the best endpoint checkpoint:
 
 ```bash
 CUBLAS_WORKSPACE_CONFIG=:4096:8 CUDA_VISIBLE_DEVICES=GPU_ID \
-  python -m mscloudr.cli.eval_canonical_components \
+  PYTHONPATH="$PWD/src" python -m mscloudr.cli.eval_canonical_components \
   --checkpoint "$OUT/CanonicalComp_mrInverse_seed42_lambda05/checkpoints/best_endpoint.pt" \
   --data-root "$DATA" --device cuda:0 \
   --output "$OUT/CanonicalComp_mrInverse_seed42_lambda05/eval_metrics.json"
