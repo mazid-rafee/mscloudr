@@ -8,8 +8,8 @@ runners.
 ## Frozen experimental identity
 
 - Backbone: `CanonicalBridgeNet(backbone_variant="cnn", widths=(32,64,128,256))`
-- Training alpha measure: uniform discrete `alpha=t/T` (beta-a=1)
-- Conditioning: `physical_alpha` (network receives `T*alpha`)
+- Training alpha measure: uniform discrete `alpha=t/T` (beta-a=1); MR-inverse reparameterizes only model conditioning
+- Conditioning: `mr_inverse` with r=3 (network receives `T * [-log(1-(1-exp(-3))*alpha)/3]`), preserving the physical-alpha bridge state
 - No explicit endpoint mixture
 - Geometry: straight bridge `x_alpha=(1-alpha)*x0+alpha*y`
 - Endpoint: `T`; prediction: direct x0; NFE: 1
@@ -22,16 +22,17 @@ runners.
 
 ```bash
 git fetch origin
-git switch exp/canonical-endpoint-alignment
+git worktree add --detach ../mscloudr-canonical origin/exp/canonical-endpoint-alignment
+cd ../mscloudr-canonical
 python -m pytest -q tests/test_endpoint_alignment.py tests/test_canonical_endpoint_alignment.py
 
 python -m mscloudr.cli.diagnose_canonical_alignment \
-  --checkpoint outputs/CANONICAL_UNIFORM_FULL/checkpoints/best_endpoint.pt \
+  --checkpoint outputs/CanonicalBridge_Uniform_MRCond_full_seed42/checkpoints/best_endpoint.pt \
   --data-root /path/to/SEN12MS-CR \
   --device cuda:0 \
   --batch-size 1 --max-batches 4 --num-bins 8 \
   --sampler-seed 42 \
-  --output-dir outputs/canonical_endpoint_alignment/uniform_seed42
+  --output-dir outputs/canonical_endpoint_alignment/mr_inverse_seed42
 ```
 
 Use an *actual* available checkpoint path. Use a GPU not occupied by training.
