@@ -31,6 +31,7 @@ from .training import (
     DIAGNOSTIC_RANDOM_T_METRIC,
     RAW_T_CONDITIONING,
     WeightedMean,
+    BridgeStepResult,
     endpoint_validation_step,
     random_t_validation_step,
     training_step,
@@ -152,6 +153,7 @@ def run_training_epoch(
     sampler_generator: torch.Generator,
     device: torch.device,
     conditioning_mode: str = RAW_T_CONDITIONING,
+    train_step_fn: Callable[..., BridgeStepResult] | None = None,
     max_batches: int | None = None,
     epoch: int = 1,
     progress_every: int | None = None,
@@ -177,7 +179,7 @@ def run_training_epoch(
             device=device,
         )
 
-        result = training_step(
+        result = (train_step_fn or training_step)(
             model,
             batch,
             schedule=schedule,
@@ -405,6 +407,7 @@ def fit(
     device: str | torch.device,
     model_identity: str = "legacy_dbcr",
     conditioning_mode: str = RAW_T_CONDITIONING,
+    train_step_fn: Callable[..., BridgeStepResult] | None = None,
     lr: float = HISTORICAL_LEARNING_RATE,
     optimizer: Optimizer | None = None,
     run_metadata: Mapping[str, Any] | None = None,
@@ -514,6 +517,7 @@ def fit(
             sampler_generator=sampler_generator,
             device=device,
             conditioning_mode=conditioning_mode,
+            train_step_fn=train_step_fn,
             max_batches=max_train_batches,
             epoch=epoch,
             progress_every=progress_every,
