@@ -46,6 +46,12 @@ def _validate_variant(args: argparse.Namespace) -> None:
     base.validate_cli_args(args)
     if args.schedule != "canonical_alpha":
         raise ValueError("experiment requires canonical_alpha")
+    if args.backbone != "cnn":
+        raise ValueError("component model requires the original cnn backbone")
+    if tuple(args.widths) != (32, 64, 128, 256):
+        raise ValueError("component model requires widths (32,64,128,256)")
+    if float(args.endpoint_probability) != 0.0:
+        raise ValueError("component experiment requires endpoint_probability=0")
     if float(args.beta_a) != 1.0:
         raise ValueError("experiment requires uniform alpha (beta-a=1)")
     if args.conditioning_coordinate != MR_INVERSE_CONDITIONING:
