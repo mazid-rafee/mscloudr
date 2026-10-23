@@ -1,6 +1,8 @@
 """Mathematical and pipeline invariants for independent projected components."""
 from functools import partial
 
+from mscloudr.cli.train_canonical_components import build_parser, _validate_variant
+
 import pytest
 import torch
 
@@ -97,3 +99,21 @@ def test_runner_accepts_custom_step_without_modifying_default():
     )
     assert loss > 0
     assert not torch.equal(model.head.weight, before)
+
+
+def test_full_run_protocol_cannot_silently_change_architecture_or_measure():
+    parser = build_parser()
+    args = parser.parse_args(["--run-name", "guard_test"])
+    _validate_variant(args)
+    cases = [
+        ("backbone", "naf"),
+        ("widths", [48, 96, 192, 384]),
+        ("endpoint_probability", 0.2),
+        ("beta_a", 1.5),
+        ("conditioning_coordinate", "physical_alpha"),
+    ]
+    for field, wrong in cases:
+        copy = parser.parse_args(["--run-name", "guard_test"])
+        setattr(copy, field, wrong)
+        with pytest.raises(ValueError):
+            _validate_variant(copy)
