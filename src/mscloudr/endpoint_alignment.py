@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 
 from .bridge import BridgeSchedule, make_bridge_state
-from .training import RAW_T_CONDITIONING, model_conditioning_coordinate
+from .training import RAW_T_CONDITIONING, SUPPORTED_CONDITIONING_MODES, model_conditioning_coordinate
 
 
 def gradient_alignment(
@@ -74,6 +74,7 @@ def profile_endpoint_alignment(
     max_batches: int = 4,
     num_bins: int = 8,
     sampler_seed: int = 42,
+    conditioning_mode: str = RAW_T_CONDITIONING,
 ) -> dict[str, Any]:
     """Return per-bin TRAIN-gradient diagnostics, with model weights unchanged.
 
@@ -84,6 +85,8 @@ def profile_endpoint_alignment(
     total_steps, max_batches, num_bins = int(total_steps), int(max_batches), int(num_bins)
     if not 1 <= num_bins <= total_steps:
         raise ValueError("num_bins must be in [1, total_steps]")
+    if conditioning_mode not in SUPPORTED_CONDITIONING_MODES:
+        raise ValueError(f"unsupported conditioning_mode: {conditioning_mode!r}")
     if max_batches <= 0 or sampler_seed < 0:
         raise ValueError("max_batches must be positive and seed nonnegative")
     dev = torch.device(device)
@@ -126,7 +129,7 @@ def profile_endpoint_alignment(
                         x_t = make_bridge_state(target, cloudy, alpha)
                         conditioning = model_conditioning_coordinate(
                             ts, alpha, total_steps=total_steps,
-                            conditioning_mode=RAW_T_CONDITIONING,
+                            conditioning_mode=conditioning_mode,
                         )
                     predicted = model(x_t, conditioning, sar)
                     loss = (predicted - target).abs().mean()
@@ -163,7 +166,7 @@ def profile_endpoint_alignment(
         "split_used": "train_only",
         "no_parameter_updates": True,
         "prediction_target": "direct_x0",
-        "conditioning_mode": "raw_t",
+        "conditioning_mode": conditioning_mode,
         "endpoint_t": total_steps,
         "interior_t_includes_endpoint": False,
         "total_steps": total_steps,
