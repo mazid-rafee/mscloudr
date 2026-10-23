@@ -1,7 +1,7 @@
 """Read-only full-ROI CanonicalBridgeNet endpoint-gradient analysis.
 
 Only accepts the original CNN backbone, uniform physical-alpha training
-measure, physical-alpha conditioning and zero endpoint mixture. This prevents
+measure, MR-inverse conditioning and zero endpoint mixture. This prevents
 architecture/measure/conditioning differences from confounding the diagnostic.
 """
 from __future__ import annotations
@@ -33,7 +33,7 @@ from mscloudr.models.canonical_bridge import (
     count_canonical_bridge_parameters,
 )
 from mscloudr.reproducibility import seed_everything
-from mscloudr.training import PHYSICAL_ALPHA_CONDITIONING
+from mscloudr.training import MR_INVERSE_CONDITIONING
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,8 +59,8 @@ def validate_canonical_control(metadata: dict) -> None:
         raise ValueError("diagnostic requires CanonicalBridgeNet CNN backbone")
     if tuple(_checkpoint_widths(metadata)) != (32, 64, 128, 256):
         raise ValueError("diagnostic requires default 7.65M CNN widths")
-    if metadata.get("conditioning_mode") != PHYSICAL_ALPHA_CONDITIONING:
-        raise ValueError("diagnostic requires physical_alpha conditioning")
+    if metadata.get("conditioning_mode") != MR_INVERSE_CONDITIONING:
+        raise ValueError("diagnostic requires mr_inverse conditioning")
     if abs(float(metadata.get("beta_a", -1.0)) - 1.0) > 1e-12:
         raise ValueError("diagnostic requires uniform physical-alpha measure")
     if float(metadata.get("endpoint_probability", 0.0)) != 0.0:
@@ -132,7 +132,7 @@ def run(args: argparse.Namespace) -> dict:
         max_batches=args.max_batches,
         num_bins=args.num_bins,
         sampler_seed=args.sampler_seed,
-        conditioning_mode=PHYSICAL_ALPHA_CONDITIONING,
+        conditioning_mode=MR_INVERSE_CONDITIONING,
     )
     result.update({
         "checkpoint": str(checkpoint_path),
@@ -140,6 +140,8 @@ def run(args: argparse.Namespace) -> dict:
         "model_identity": metadata["model_identity"],
         "backbone_variant": "cnn",
         "training_bridge_measure": "uniform_discrete_alpha_grid",
+        "conditioning_mode": MR_INVERSE_CONDITIONING,
+        "baseline_run": "CanonicalBridge_Uniform_MRCond_full_seed42",
         "beta_a": 1.0,
         "split_protocol": REFERENCE_PROTOCOL,
         "split_audit": audit,
