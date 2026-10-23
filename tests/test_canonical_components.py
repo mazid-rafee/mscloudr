@@ -105,12 +105,21 @@ def test_full_run_protocol_cannot_silently_change_architecture_or_measure():
     parser = build_parser()
     args = parser.parse_args(["--run-name", "guard_test"])
     _validate_variant(args)
+    # The canonical parser does not expose architecture or endpoint mixture.
+    # Reject unsupported flags at parsing rather than reading absent fields.
+    for cli_flags in [
+        ["--backbone", "naf"],
+        ["--widths", "48", "96", "192", "384"],
+        ["--endpoint-probability", "0.2"],
+    ]:
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--run-name", "guard_test", *cli_flags])
+
+    # Available experimental axes must remain fixed.
     cases = [
-        ("backbone", "naf"),
-        ("widths", [48, 96, 192, 384]),
-        ("endpoint_probability", 0.2),
         ("beta_a", 1.5),
         ("conditioning_coordinate", "physical_alpha"),
+        ("component_weight", -1.0),
     ]
     for field, wrong in cases:
         copy = parser.parse_args(["--run-name", "guard_test"])
