@@ -31,13 +31,13 @@ def _metadata():
         model_identity="canonical_bridge_net",
         architecture_widths=[32, 64, 128, 256],
         backbone_variant="cnn",
-        conditioning_mode="physical_alpha",
+        conditioning_mode="mr_inverse",
         beta_a=1.0,
         endpoint_probability=0.0,
     )
 
 
-def test_canonical_uniform_physical_control_is_accepted():
+def test_canonical_uniform_mr_inverse_control_is_accepted():
     validate_canonical_control(_metadata())
     legacy_metadata = _metadata()
     del legacy_metadata["backbone_variant"]
@@ -48,7 +48,7 @@ def test_canonical_uniform_physical_control_is_accepted():
 @pytest.mark.parametrize("name,value", [
     ("backbone_variant", "naf"),
     ("architecture_widths", [48, 96, 192, 384]),
-    ("conditioning_mode", "sine_inverse"),
+    ("conditioning_mode", "physical_alpha"),
     ("beta_a", 1.5),
     ("endpoint_probability", 0.2),
 ])
@@ -59,7 +59,7 @@ def test_reject_confounded_control(name, value):
         validate_canonical_control(metadata)
 
 
-def test_physical_alpha_profiling_is_reproducible_without_updates():
+def test_mr_inverse_profiling_is_reproducible_without_updates():
     net = TinyAlphaModel()
     state = {k: v.detach().clone() for k, v in net.state_dict().items()}
     kwargs = dict(
@@ -74,7 +74,7 @@ def test_physical_alpha_profiling_is_reproducible_without_updates():
     result1 = profile_endpoint_alignment(net, _batch(), **kwargs)
     result2 = profile_endpoint_alignment(net, _batch(), **kwargs)
     assert result1 == result2
-    assert result1["conditioning_mode"] == "physical_alpha"
+    assert result1["conditioning_mode"] == "mr_inverse"
     assert result1["split_used"] == "train_only"
     assert len(result1["bins"]) == 5
     assert all(torch.equal(p, state[k]) for k, p in net.state_dict().items())
