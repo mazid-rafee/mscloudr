@@ -63,13 +63,13 @@ def test_mr_inverse_profiling_is_reproducible_without_updates():
     net = TinyAlphaModel()
     state = {k: v.detach().clone() for k, v in net.state_dict().items()}
     kwargs = dict(
-        schedule=get_bridge_schedule("original"),
+        schedule=get_bridge_schedule("canonical_alpha"),
         total_steps=10,
         device="cpu",
         num_bins=5,
         max_batches=1,
         sampler_seed=93,
-        conditioning_mode="physical_alpha",
+        conditioning_mode="mr_inverse",
     )
     result1 = profile_endpoint_alignment(net, _batch(), **kwargs)
     result2 = profile_endpoint_alignment(net, _batch(), **kwargs)
