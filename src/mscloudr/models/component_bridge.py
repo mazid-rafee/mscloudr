@@ -49,7 +49,7 @@ class CanonicalComponentBridgeNet(CanonicalBridgeNet):
     ):
         super().__init__(
             in_opt=in_opt, in_sar=in_sar, widths=widths, alpha_dim=alpha_dim,
-            total_steps=total_steps, mid_blocks=mid_blocks, backbone_variant="cnn",
+            total_steps=total_steps, mid_blocks=mid_blocks,
         )
         self.head = nn.Conv2d(self.widths[0], 2 * in_opt, kernel_size=3, padding=1)
 
